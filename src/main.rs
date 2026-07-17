@@ -3,6 +3,7 @@
 //! where editing a running script (by you, a background process, or malware)
 //! changes what executes past the current line.
 
+mod cache;
 mod checksum;
 mod config;
 mod frontmatter;
@@ -178,9 +179,12 @@ SWITCHES (also settable in the `# /// scriptbox` block; a flag wins):\n\
                          (--no-argv0-rewrite is an alias for --argv0 off)\n\
     --subscripts[=MODE]  analyze child invocations (source/. and interpreter\n\
                          calls). MODE:\n\
-                           report  detect + list them (default for bare flag)\n\
-                           wrap    also route shell children through scriptbox,\n\
-                                   freezing them too (recursively)\n\
+                           report       detect + list them (default bare flag)\n\
+                           wrap         route shell children through scriptbox,\n\
+                                        freezing each per-invocation\n\
+                           freeze-tree  wrap + a launch-scoped read-only snapshot\n\
+                                        cache: the whole tree frozen once,\n\
+                                        consistent even against mid-run edits\n\
                            off\n\
                          Requires a build with `--features subscripts`.\n\
 \n\

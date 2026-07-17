@@ -193,22 +193,32 @@ modes:
 
 - **`report`** (the bare flag) - detect and list them.
 - **`wrap`** - rewrite resolvable *shell* children (`bash child.sh`, `./x.sh`) to
-  route through scriptbox, so each child is frozen too, recursively. `source`/`.`
-  (in-process), dynamic paths, and already-immune interpreters (python/ruby/node)
-  are reported but left alone.
+  route through scriptbox, so each child is frozen too, recursively. Each
+  invocation freezes its target fresh from disk.
+- **`freeze-tree`** - like `wrap`, but backed by a launch-scoped, read-only
+  (mode 0400), pin-on-copy snapshot cache keyed by canonical path. The whole
+  reachable tree is frozen at first encounter and every invocation reuses the
+  same snapshot, so an edit to a script *between* invocations can't leak into a
+  later one (which plain `wrap` allows). Stronger consistency, at the cost of
+  ignoring intra-run edits. Wrapped trees also carry a depth counter that caps
+  runaway mutual recursion instead of fork-bombing.
 
-The analyzer uses a real shell parser and is a heavy dependency, so it's behind a
-non-default build feature; the flag errors without it:
+In all cases `source`/`.` (in-process), dynamic paths, and already-immune
+interpreters (python/ruby/node) are reported but left alone. The analyzer uses a
+real shell parser and is a heavy dependency, so it's behind a non-default build
+feature; the flag errors without it:
 
 ```sh
 cargo install --features subscripts --git https://github.com/jhheider/scriptbox
-scriptbox --subscripts=wrap bash ./deploy.sh
+scriptbox --subscripts=freeze-tree bash ./deploy.sh
 ```
 
 Literal paths resolve; paths built from variables or command substitution are
 reported unresolvable - the same wall shellcheck hits (SC1090), and the eventual
-answer is a directive or a runtime trace. In-process `source` isn't wrapped yet
-(you can't spawn it through scriptbox); freezing it via an fd is the next step.
+answer is a directive or a runtime trace. Two known spike gaps: in-process
+`source` isn't wrapped yet (you can't spawn it through scriptbox - freezing it
+via an fd is next), and the `freeze-tree` cache dir isn't cleaned up on exit
+(the root `exec`s away), so it lingers in `$TMPDIR`.
 
 ## License
 

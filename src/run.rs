@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::config::{Argv0, Subscripts};
-use crate::{checksum, frontmatter, interpreter, loader, shebang, subscripts};
+use crate::{cache, checksum, frontmatter, interpreter, loader, shebang, subscripts};
 
 /// A fully-parsed request to run a script.
 pub struct RunSpec {
@@ -35,6 +35,10 @@ struct Plan {
     argv: Vec<String>,
     /// Exported as `$SCRIPTBOX_SOURCE`.
     source: String,
+    /// The `freeze-tree` snapshot cache dir, exported as `$SCRIPTBOX_CACHE`.
+    cache: Option<String>,
+    /// Wrap-recursion depth to export as `$SCRIPTBOX_DEPTH` for children.
+    depth: Option<u32>,
     /// The immutable copy, kept alive (and thus its fd open) until `exec`.
     immutable: loader::ImmutableScript,
 }
@@ -44,17 +48,56 @@ fn plan(spec: &RunSpec) -> Result<Plan> {
     let real_path = std::fs::canonicalize(&spec.script).unwrap_or_else(|_| spec.script.clone());
     let source = real_path.to_string_lossy().into_owned();
 
-    let bytes = loader::read_script(&spec.script)?;
+    let disk_bytes = loader::read_script(&spec.script)?;
+    let subs = resolve_subscripts(spec, &frontmatter::parse(&disk_bytes))?;
+
+    if subs.needs_parser() && !subscripts::enabled() {
+        bail!(
+            "subscript analysis was requested, but this scriptbox was built without the \
+             `subscripts` feature.\n    \
+             cargo install --features subscripts --git https://github.com/jhheider/scriptbox"
+        );
+    }
+
+    // Fork-bomb backstop for wrapped trees: each wrap level increments a depth
+    // counter in the env; past a high cap, refuse rather than spawn unboundedly.
+    // (Doesn't affect ordinary non-wrapped runs.)
+    const WRAP_DEPTH_CAP: u32 = 256;
+    let wrapping = matches!(subs, Subscripts::Wrap | Subscripts::FreezeTree);
+    let depth = std::env::var("SCRIPTBOX_DEPTH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0u32);
+    if wrapping && depth >= WRAP_DEPTH_CAP {
+        bail!(
+            "scriptbox wrap depth {depth} hit the cap of {WRAP_DEPTH_CAP} running `{}` - \
+             likely unbounded recursion between scripts.",
+            spec.script.display()
+        );
+    }
+
+    // `freeze-tree`: serve the whole tree from a launch-scoped, path-keyed,
+    // read-only, pinned snapshot cache, so every invocation of a script sees the
+    // same bytes even if it's edited on disk mid-run. Other modes read disk.
+    let (bytes, cache) = if subs == Subscripts::FreezeTree {
+        let dir = cache::get_or_create()?;
+        let frozen = cache::frozen_bytes(&dir, &real_path, &disk_bytes)?;
+        (frozen, Some(dir.to_string_lossy().into_owned()))
+    } else {
+        (disk_bytes, None)
+    };
+
+    // Parse frontmatter from the bytes that will actually run (cached or disk).
     let fm = frontmatter::parse(&bytes);
 
-    // Integrity gate first, over the ORIGINAL bytes (so a pin matches the file
-    // on disk, independent of any $0 rewrite we apply below).
+    // Integrity gate over those bytes (a pin matches the file, independent of any
+    // $0 rewrite or child-wrapping applied below).
     if let Some(expected) = fm.checksum.as_deref() {
         let actual = checksum::pin_of(&bytes);
         if !checksum::pins_match(expected, &actual) {
             bail!(
                 "checksum mismatch for `{}`\n  expected: {}\n  actual:   {}\n\
-                 the script on disk does not match its pinned checksum; refusing to run.\n\
+                 the script does not match its pinned checksum; refusing to run.\n\
                  if this change is intended, update the pin with `scriptbox pin {}`.",
                 spec.script.display(),
                 expected.trim(),
@@ -64,13 +107,10 @@ fn plan(spec: &RunSpec) -> Result<Plan> {
         }
     }
 
-    // Resolve the switches: CLI flag > frontmatter > default.
     let argv0 = resolve_argv0(spec, &fm)?;
-    let subs = resolve_subscripts(spec, &fm)?;
 
-    // Subscript analysis (opt-in; errors if requested but built without the
-    // `subscripts` feature). `Wrap` returns rewritten bytes (children routed
-    // through scriptbox); `Report` returns them unchanged.
+    // Subscript rewriting (opt-in). `Wrap`/`FreezeTree` return bytes with shell
+    // children routed through scriptbox; `Report` returns them unchanged.
     let bytes = if subs == Subscripts::Off {
         bytes
     } else {
@@ -107,6 +147,9 @@ fn plan(spec: &RunSpec) -> Result<Plan> {
         interp,
         argv,
         source,
+        cache,
+        // Children of a wrapped run inherit an incremented depth counter.
+        depth: wrapping.then(|| depth + 1),
         immutable,
     })
 }
@@ -143,6 +186,13 @@ pub fn run(spec: RunSpec) -> Result<Infallible> {
         // Universal escape hatch for self-locating scripts: the real path is
         // always here even though `$0`/`BASH_SOURCE` may show the fd path.
         .env("SCRIPTBOX_SOURCE", &plan.source);
+    // Share the freeze-tree snapshot cache with the whole descendant tree.
+    if let Some(dir) = &plan.cache {
+        cmd.env(cache::ENV_VAR, dir);
+    }
+    if let Some(d) = plan.depth {
+        cmd.env("SCRIPTBOX_DEPTH", d.to_string());
+    }
 
     // Replace this process with the interpreter. Returns only on failure.
     let err = cmd.exec();

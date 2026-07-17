@@ -11,6 +11,12 @@ use crate::config::Subscripts;
 use anyhow::Result;
 use std::path::Path;
 
+/// Whether this binary was built with the shell parser (the `subscripts`
+/// feature). All non-`Off` modes need it.
+pub const fn enabled() -> bool {
+    cfg!(feature = "subscripts")
+}
+
 /// Apply the requested subscript `mode` to `bytes`, returning the bytes to serve
 /// the interpreter (rewritten under `Wrap`, unchanged under `Report`). Never
 /// called with `Subscripts::Off`.
@@ -102,11 +108,17 @@ mod detect {
                 print_report(script, &sites, false);
                 Ok(bytes.to_vec())
             }
-            Subscripts::Wrap => {
+            Subscripts::Wrap | Subscripts::FreezeTree => {
                 let exe =
                     std::env::current_exe().context("finding the scriptbox binary to wrap with")?;
                 let exe = exe.to_string_lossy();
-                let out = wrap(src, &sites, &exe);
+                // Propagate the same mode down so the whole tree behaves alike.
+                let propagate = if mode == Subscripts::FreezeTree {
+                    "freeze-tree"
+                } else {
+                    "wrap"
+                };
+                let out = wrap(src, &sites, &exe, propagate);
                 print_report(script, &sites, true);
                 Ok(out.into_bytes())
             }
@@ -125,10 +137,10 @@ mod detect {
         Ok(cmds.into_iter().filter_map(classify).collect())
     }
 
-    /// Insert `scriptbox --subscripts=wrap ` before each wrappable child command,
-    /// applied high offset to low so earlier offsets stay valid.
-    fn wrap(src: &str, sites: &[Site], exe: &str) -> String {
-        let prefix = format!("{} --subscripts=wrap ", shell_squote(exe));
+    /// Insert `scriptbox --subscripts=<propagate> ` before each wrappable child
+    /// command, applied high offset to low so earlier offsets stay valid.
+    fn wrap(src: &str, sites: &[Site], exe: &str, propagate: &str) -> String {
+        let prefix = format!("{} --subscripts={} ", shell_squote(exe), propagate);
         let mut offsets: Vec<usize> = sites
             .iter()
             .filter(|s| s.wrappable())
@@ -325,7 +337,7 @@ mod detect {
                        ./step.sh\n\
                        bash \"$X\"\n";
             let sites = parse_sites(src).unwrap();
-            let out = wrap(src, &sites, "/usr/local/bin/scriptbox");
+            let out = wrap(src, &sites, "/usr/local/bin/scriptbox", "wrap");
             // Shell subprocess + shell exec are wrapped (exe is shell-quoted).
             assert!(
                 out.contains("scriptbox' --subscripts=wrap bash child.sh"),

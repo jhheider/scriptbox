@@ -446,3 +446,64 @@ fn subscripts_wrap_freezes_a_shell_child() {
     let _ = std::fs::remove_file(&child);
     let _ = std::fs::remove_file(&parent);
 }
+
+#[cfg(feature = "subscripts")]
+#[test]
+fn freeze_tree_ignores_a_cross_invocation_edit() {
+    if !have("bash") {
+        return;
+    }
+    // A(first) -> B edits A.sh on disk -> B calls A(second). Under `wrap` the
+    // second A re-reads the edit; under `freeze-tree` it reuses the snapshot.
+    let a = write_script("ftA", "");
+    let b = write_script("ftB", "");
+    let a_body = format!(
+        "#!/usr/bin/env -S scriptbox bash\necho A:$1\n[ \"$1\" = first ] && bash {}\ntrue\n",
+        b.display()
+    );
+    let b_body = format!(
+        "#!/usr/bin/env -S scriptbox bash\nprintf 'echo A_INJECTED\\n' >> {}\nbash {} second\n",
+        a.display(),
+        a.display()
+    );
+    let reset = || {
+        std::fs::write(&a, &a_body).unwrap();
+        std::fs::write(&b, &b_body).unwrap();
+    };
+
+    reset();
+    let wrapped = scriptbox()
+        .arg("--subscripts=wrap")
+        .arg("bash")
+        .arg(&a)
+        .arg("first")
+        .output()
+        .unwrap();
+    assert!(
+        stdout(&wrapped).contains("A_INJECTED"),
+        "wrap: the cross-invocation edit should leak; got {:?}",
+        stdout(&wrapped)
+    );
+
+    reset();
+    let frozen = scriptbox()
+        .arg("--subscripts=freeze-tree")
+        .arg("bash")
+        .arg(&a)
+        .arg("first")
+        .output()
+        .unwrap();
+    assert!(
+        stdout(&frozen).contains("A:first") && stdout(&frozen).contains("A:second"),
+        "freeze-tree: both invocations should still run: {:?}",
+        stdout(&frozen)
+    );
+    assert!(
+        !stdout(&frozen).contains("A_INJECTED"),
+        "freeze-tree: the cached snapshot must win over the disk edit; got {:?}",
+        stdout(&frozen)
+    );
+
+    let _ = std::fs::remove_file(&a);
+    let _ = std::fs::remove_file(&b);
+}

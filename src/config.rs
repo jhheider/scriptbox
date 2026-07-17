@@ -48,20 +48,36 @@ pub enum Subscripts {
     Report,
     /// Rewrite resolvable *shell* child invocations (`bash child.sh`, `./x.sh`)
     /// to route through scriptbox, so each child is frozen too (recursively).
-    /// `source`/`.` (in-process), dynamic paths, and already-immune interpreters
+    /// Each invocation freezes its target fresh from disk. `source`/`.`
+    /// (in-process), dynamic paths, and already-immune interpreters
     /// (python/ruby/node) are reported but left unwrapped.
     Wrap,
+    /// Like `Wrap`, but backed by a launch-scoped, read-only (mode 0400),
+    /// pin-on-copy snapshot cache keyed by canonical path: the whole reachable
+    /// tree is frozen at first encounter and every invocation reuses the same
+    /// snapshot. Consistent across the tree (an edit to a script mid-run can't
+    /// leak into a later invocation of it) - stronger than `Wrap`, at the cost
+    /// of ignoring intra-run edits.
+    FreezeTree,
 }
 
 impl Subscripts {
     pub const DEFAULT: Subscripts = Subscripts::Off;
+
+    /// True for modes that analyze/rewrite children (need the `subscripts` build).
+    pub fn needs_parser(self) -> bool {
+        !matches!(self, Subscripts::Off)
+    }
 
     pub fn parse(s: &str) -> Result<Subscripts> {
         Ok(match s.trim().to_ascii_lowercase().as_str() {
             "off" | "none" | "false" => Subscripts::Off,
             "report" | "on" | "true" => Subscripts::Report,
             "wrap" => Subscripts::Wrap,
-            other => bail!("unknown subscripts mode `{other}` (want: off | report | wrap)"),
+            "freeze-tree" | "freeze" | "tree" => Subscripts::FreezeTree,
+            other => {
+                bail!("unknown subscripts mode `{other}` (want: off | report | wrap | freeze-tree)")
+            }
         })
     }
 }
@@ -82,6 +98,13 @@ mod tests {
     fn subscripts_parsing() {
         assert_eq!(Subscripts::parse("report").unwrap(), Subscripts::Report);
         assert_eq!(Subscripts::parse("off").unwrap(), Subscripts::Off);
-        assert!(Subscripts::parse("freeze").is_err());
+        assert_eq!(Subscripts::parse("wrap").unwrap(), Subscripts::Wrap);
+        assert_eq!(
+            Subscripts::parse("freeze-tree").unwrap(),
+            Subscripts::FreezeTree
+        );
+        assert_eq!(Subscripts::parse("freeze").unwrap(), Subscripts::FreezeTree);
+        assert!(Subscripts::parse("nonsense").is_err());
+        assert!(!Subscripts::Off.needs_parser() && Subscripts::Wrap.needs_parser());
     }
 }
