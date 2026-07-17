@@ -16,8 +16,11 @@ jobs:
       bin-name: scriptbox
       tag: ${{ github.event.inputs.tag }}
       # POSIX-only: musl (linux) + darwin, no Windows.
-      # publish-crates + tap are intentionally off while the repo is private;
-      # enable them (and add tap-repo/tap-formula) when it goes public.
+      include-files: "README.md LICENSE-MIT LICENSE-APACHE"
+      # Homebrew tap is on; crates.io is intentionally deferred (publish-crates
+      # stays off / default) until we decide to claim the crates.io name.
+      tap-repo: jhheider/homebrew-tap
+      tap-formula: Formula/scriptbox.rb
       targets: |
         {"include": [
           {"os":"ubuntu-latest","target":"x86_64-unknown-linux-musl","asset":"scriptbox-linux-x86_64.tar.gz"},

@@ -45,11 +45,19 @@ same arguments, stdin, exit code, and correct line numbers in errors.
 ## Install
 
 ```sh
-cargo install --git https://github.com/jhheider/scriptbox
+brew install jhheider/tap/scriptbox      # Homebrew (macOS + Linux)
 ```
 
-`brew install jhheider/tap/scriptbox` and `cargo install scriptbox` land with the
-first public release.
+```sh
+curl -fsSL https://heider.cc/scriptbox.sh | sh      # prebuilt binary -> ~/.local/bin
+```
+
+Or grab a binary from [the latest release](https://github.com/jhheider/scriptbox/releases/latest)
+(`scriptbox-{linux,macos}-{aarch64,x86_64}.tar.gz`), or build it:
+
+```sh
+cargo install --git https://github.com/jhheider/scriptbox
+```
 
 ## What it does
 
