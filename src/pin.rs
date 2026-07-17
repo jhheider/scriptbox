@@ -1,4 +1,4 @@
-//! The `pin` and `hash` subcommands — for creating checksum-pinned invocations.
+//! The `pin` and `hash` subcommands - for creating checksum-pinned invocations.
 
 use anyhow::Result;
 use std::path::Path;
@@ -20,12 +20,12 @@ pub fn pin(path: &Path) -> Result<()> {
     let pin = checksum::pin_of(&bytes);
     let fm = crate::frontmatter::parse(&bytes);
     if fm.interpreter.is_none() && fm.checksum.is_none() {
-        // No block yet — emit a complete one.
+        // No block yet - emit a complete one.
         println!("# /// scriptbox");
         println!("# checksum = \"{pin}\"");
         println!("# ///");
     } else {
-        // A block already exists — just the line to drop into it.
+        // A block already exists - just the line to drop into it.
         println!("# checksum = \"{pin}\"");
     }
     Ok(())

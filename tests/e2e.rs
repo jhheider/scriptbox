@@ -3,7 +3,7 @@
 //! These tests exercise the built `scriptbox` binary against real shells. The
 //! headline tests are *differential*: they run a self-mutating script BOTH under
 //! a plain shell and under scriptbox, and assert the plain shell is corrupted
-//! while scriptbox is insulated — proving scriptbox changes behaviour, not just
+//! while scriptbox is insulated - proving scriptbox changes behaviour, not just
 //! that it runs.
 //!
 //! Shell-specific tests skip (rather than fail) when a shell isn't installed, so
@@ -47,7 +47,7 @@ fn stderr(o: &Output) -> String {
 /// A script that appends a "vulnerable" marker to its own file partway through,
 /// then finishes. Under a streaming shell the marker executes; under scriptbox
 /// it must not. It targets `$SCRIPTBOX_SOURCE` if set (scriptbox), else `$0`
-/// (plain shell) — so the same script reproduces the hazard both ways.
+/// (plain shell) - so the same script reproduces the hazard both ways.
 fn self_mutating(shell: &str) -> String {
     format!(
         "#!/usr/bin/env -S scriptbox {shell}\n\
@@ -103,7 +103,7 @@ fn differential_insulation_across_shells() {
         );
         assert!(
             !stdout(&out).contains("INJECTED_MARKER"),
-            "{shell}: scriptbox FAILED to insulate — the injected line executed. stdout={:?}",
+            "{shell}: scriptbox FAILED to insulate - the injected line executed. stdout={:?}",
             stdout(&out)
         );
         // Prove the mutation really happened on disk (so the test is meaningful).

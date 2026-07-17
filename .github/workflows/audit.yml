@@ -8,3 +8,5 @@ on:
 jobs:
   audit:
     uses: jhheider/rust-ci/.github/workflows/audit.yml@v1
+    with:
+      runs-on: self-hosted

@@ -4,13 +4,13 @@
 //! `/proc/self/fd/N`), `$0` and `${BASH_SOURCE[0]}` see that fd path rather than
 //! the real script path. `SCRIPTBOX_SOURCE` (exported unconditionally by the
 //! runner) is the universal escape hatch, but for the common `usage: $0` /
-//! `dirname "$0"` case we can also reset `$0` in-run — where the shell supports
-//! it — by replacing the line-1 shebang with a one-line prologue.
+//! `dirname "$0"` case we can also reset `$0` in-run - where the shell supports
+//! it - by replacing the line-1 shebang with a one-line prologue.
 //!
 //! What each shell supports for an *in-run* `$0` reset (probed empirically):
-//! - **bash ≥ 5**: `BASH_ARGV0='…'` (on bash 3.2 it's a harmless plain var).
-//! - **zsh**: `0='…'` (direct assignment).
-//! - **dash / ksh / sh / other**: no in-run mechanism — `SCRIPTBOX_SOURCE` only.
+//! - **bash >= 5**: `BASH_ARGV0='...'` (on bash 3.2 it's a harmless plain var).
+//! - **zsh**: `0='...'` (direct assignment).
+//! - **dash / ksh / sh / other**: no in-run mechanism - `SCRIPTBOX_SOURCE` only.
 //!
 //! Trade-off when we do rewrite `$0`: `${BASH_SOURCE[0]}` still shows the fd
 //! path, so the `[[ "${BASH_SOURCE[0]}" == "$0" ]]` "sourced-or-executed?" idiom
@@ -59,7 +59,7 @@ fn shell_squote(s: &str) -> String {
 /// When `rewrite_argv0` is set, the first line is a `#!` shebang (safe to
 /// discard, since it's a comment to the interpreter), and the interpreter
 /// supports an in-run `$0` reset, line 1 is replaced **one-for-one** with the
-/// reset — preserving every subsequent line number exactly. In every other case
+/// reset - preserving every subsequent line number exactly. In every other case
 /// the original bytes are returned verbatim.
 pub fn prepare_bytes(
     original: &[u8],

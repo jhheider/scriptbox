@@ -1,4 +1,4 @@
-//! scriptbox — read a script fully into an immutable copy at invoke, verify an
+//! scriptbox - read a script fully into an immutable copy at invoke, verify an
 //! optional checksum, then hand it to the real interpreter. Closes the window
 //! where editing a running script (by you, a background process, or malware)
 //! changes what executes past the current line.
@@ -68,7 +68,7 @@ fn dispatch_run(args: &[String]) -> Result<()> {
     }
 
     // The script is the first argument that is an existing file *and* is not a
-    // program binary — interpreters (`/bin/bash`, a pkgx Mach-O) are ELF/Mach-O,
+    // program binary - interpreters (`/bin/bash`, a pkgx Mach-O) are ELF/Mach-O,
     // scripts are text. This lets the interpreter be given as a bare name
     // (`bash`) or a full path (`/bin/bash`) without being mistaken for the
     // script, while a bare interpreter name simply isn't a file and is skipped.
@@ -81,7 +81,7 @@ fn dispatch_run(args: &[String]) -> Result<()> {
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "no script file found in arguments: {rest:?}\n\
-                 usage: scriptbox [interpreter] <script> [args…]"
+                 usage: scriptbox [interpreter] <script> [args...]"
             )
         })?;
 
@@ -122,10 +122,10 @@ fn is_program_binary(path: &Path) -> bool {
 
 fn usage() {
     eprintln!(
-        "scriptbox {VERSION} — run a script from an immutable copy\n\
+        "scriptbox {VERSION} - run a script from an immutable copy\n\
 \n\
 USAGE:\n\
-    scriptbox [FLAGS] [INTERPRETER [IARGS…]] <SCRIPT> [ARGS…]\n\
+    scriptbox [FLAGS] [INTERPRETER [IARGS...]] <SCRIPT> [ARGS...]\n\
     scriptbox pin  <SCRIPT>     print a pin-able `# /// scriptbox` block\n\
     scriptbox hash <SCRIPT>     print the script's sha256 pin\n\
 \n\
@@ -139,7 +139,7 @@ FLAGS:\n\
     -V, --version\n\
     -h, --help\n\
 \n\
-Self-locating scripts should read $SCRIPTBOX_SOURCE (the real path) — e.g.\n\
+Self-locating scripts should read $SCRIPTBOX_SOURCE (the real path) - e.g.\n\
     SELF=\"${{SCRIPTBOX_SOURCE:-${{BASH_SOURCE[0]}}}}\"\n"
     );
 }

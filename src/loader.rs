@@ -1,7 +1,7 @@
 //! Reading the script and pinning its bytes into an immutable, inheritable fd.
 //!
 //! The fd is a **seekable regular file** (a sealed `memfd` on Linux, a
-//! written-then-unlinked temp file on macOS) — never a pipe — so the
+//! written-then-unlinked temp file on macOS) - never a pipe - so the
 //! interpreter's block-read+seek path works and error messages keep correct
 //! line numbers, and so re-reading interpreters (e.g. `uv run --script`) can
 //! re-open it to parse inline metadata.
@@ -12,7 +12,7 @@ use std::path::Path;
 
 /// Read the whole script into memory.
 ///
-/// On macOS, refuse to materialize an iCloud/Dropbox "dataless" placeholder —
+/// On macOS, refuse to materialize an iCloud/Dropbox "dataless" placeholder -
 /// reading one triggers a blocking on-demand download that can hang forever if
 /// the provider is offline. Report a clear error instead of stalling.
 pub fn read_script(path: &Path) -> Result<Vec<u8>> {
@@ -61,7 +61,7 @@ pub fn immutable(bytes: &[u8]) -> Result<ImmutableScript> {
 }
 
 /// Linux: a sealed anonymous `memfd`. `F_SEAL_WRITE` makes it genuinely
-/// immutable — even scriptbox can no longer alter it — with no disk round-trip.
+/// immutable - even scriptbox can no longer alter it - with no disk round-trip.
 #[cfg(target_os = "linux")]
 fn make_fd(bytes: &[u8]) -> Result<OwnedFd> {
     use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, memfd_create};
@@ -76,8 +76,8 @@ fn make_fd(bytes: &[u8]) -> Result<OwnedFd> {
 }
 
 /// macOS/other POSIX: write to a private temp file, then re-open it read-only
-/// and unlink the path. After the unlink no path reaches the bytes — only our
-/// (read-only) fd, dup'd by the interpreter via `/dev/fd/N` — so a mid-run edit
+/// and unlink the path. After the unlink no path reaches the bytes - only our
+/// (read-only) fd, dup'd by the interpreter via `/dev/fd/N` - so a mid-run edit
 /// to the original source cannot reach the running copy.
 #[cfg(not(target_os = "linux"))]
 fn make_fd(bytes: &[u8]) -> Result<OwnedFd> {

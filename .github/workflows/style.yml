@@ -14,3 +14,4 @@ jobs:
     uses: jhheider/rust-ci/.github/workflows/style.yml@v1
     with:
       skip-prefixes: "LICENSE"
+      runs-on: self-hosted

@@ -1,6 +1,6 @@
 //! Optional integrity verification: a `sha256:<hex>` pin over the script bytes.
 //!
-//! This is a *separate* guarantee from runtime immutability — it answers "is
+//! This is a *separate* guarantee from runtime immutability - it answers "is
 //! this the script I expect?" (provenance), not "can it change while running?".
 
 use sha2::{Digest, Sha256};
@@ -9,8 +9,8 @@ use std::fmt::Write as _;
 /// The canonical pin of a script: `sha256:<hex>` over the script's bytes *with
 /// its own frontmatter `checksum` line excluded*.
 ///
-/// Excluding that one line is what makes pinning non-circular — writing the pin
-/// into the file doesn't change the value the pin is computed from — while every
+/// Excluding that one line is what makes pinning non-circular - writing the pin
+/// into the file doesn't change the value the pin is computed from - while every
 /// other byte still contributes, so tampering is still caught.
 pub fn pin_of(bytes: &[u8]) -> String {
     sha256_pin(&digest_input(bytes))
@@ -27,7 +27,7 @@ pub fn sha256_pin(bytes: &[u8]) -> String {
     s
 }
 
-/// Return `bytes` with the in-block frontmatter `checksum = …` line removed
+/// Return `bytes` with the in-block frontmatter `checksum = ...` line removed
 /// (line terminator included). Non-UTF-8 input is returned unchanged (a binary
 /// blob has no text frontmatter to strip).
 fn digest_input(bytes: &[u8]) -> Vec<u8> {
@@ -53,7 +53,7 @@ fn digest_input(bytes: &[u8]) -> Vec<u8> {
 }
 
 /// For a raw physical line, the trimmed body after stripping a leading `#` and
-/// one optional space — or `None` if the line isn't a `#` comment.
+/// one optional space - or `None` if the line isn't a `#` comment.
 fn comment_body(line: &str) -> Option<&str> {
     let after = line.trim_start().strip_prefix('#')?;
     Some(after.strip_prefix(' ').unwrap_or(after).trim())

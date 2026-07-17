@@ -1,4 +1,4 @@
-//! The run path: read → verify → pin bytes into an immutable fd → exec the
+//! The run path: read -> verify -> pin bytes into an immutable fd -> exec the
 //! real interpreter against that fd (never the mutable original path).
 
 use anyhow::{Result, bail};
@@ -52,7 +52,7 @@ pub fn run(spec: RunSpec) -> Result<Infallible> {
     let served = interpreter::prepare_bytes(&bytes, &interp, &real_str, spec.rewrite_argv0);
     let immutable = loader::immutable(&served)?;
 
-    // interp [interp_args…] <fd_path> [script_args…]
+    // interp [interp_args...] <fd_path> [script_args...]
     let mut cmd = Command::new(&interp);
     cmd.args(&interp_args)
         .arg(&immutable.fd_path)
