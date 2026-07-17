@@ -1,5 +1,8 @@
 # `scriptbox`
 
+[![CI](https://github.com/jhheider/scriptbox/actions/workflows/ci.yml/badge.svg)](https://github.com/jhheider/scriptbox/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 Shells read your script *as they run it*, a line at a time straight off disk.
 So if the file changes mid-run, the shell reads on from its byte offset into the
 new bytes and runs whatever now lands there:
