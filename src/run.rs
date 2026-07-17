@@ -69,10 +69,13 @@ fn plan(spec: &RunSpec) -> Result<Plan> {
     let subs = resolve_subscripts(spec, &fm)?;
 
     // Subscript analysis (opt-in; errors if requested but built without the
-    // `subscripts` feature). Report-only for now: it doesn't freeze children.
-    if subs == Subscripts::Report {
-        subscripts::report(&bytes, &spec.script)?;
-    }
+    // `subscripts` feature). `Wrap` returns rewritten bytes (children routed
+    // through scriptbox); `Report` returns them unchanged.
+    let bytes = if subs == Subscripts::Off {
+        bytes
+    } else {
+        subscripts::apply(subs, &bytes, &spec.script)?
+    };
 
     let (interp, interp_args) = resolve_interpreter(spec, &fm, &bytes);
 

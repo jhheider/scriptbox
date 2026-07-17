@@ -43,9 +43,14 @@ impl Argv0 {
 pub enum Subscripts {
     /// No subscript analysis. (default)
     Off,
-    /// Spike: statically detect and report resolvable `source`/interpreter call
-    /// sites. Detection only - it does not yet freeze the children.
+    /// Statically detect and report resolvable `source`/interpreter call sites.
+    /// Detection only - it does not touch what runs.
     Report,
+    /// Rewrite resolvable *shell* child invocations (`bash child.sh`, `./x.sh`)
+    /// to route through scriptbox, so each child is frozen too (recursively).
+    /// `source`/`.` (in-process), dynamic paths, and already-immune interpreters
+    /// (python/ruby/node) are reported but left unwrapped.
+    Wrap,
 }
 
 impl Subscripts {
@@ -55,7 +60,8 @@ impl Subscripts {
         Ok(match s.trim().to_ascii_lowercase().as_str() {
             "off" | "none" | "false" => Subscripts::Off,
             "report" | "on" | "true" => Subscripts::Report,
-            other => bail!("unknown subscripts mode `{other}` (want: off | report)"),
+            "wrap" => Subscripts::Wrap,
+            other => bail!("unknown subscripts mode `{other}` (want: off | report | wrap)"),
         })
     }
 }

@@ -177,8 +177,12 @@ SWITCHES (also settable in the `# /// scriptbox` block; a flag wins):\n\
                            off      leave $0 as the fd path\n\
                          (--no-argv0-rewrite is an alias for --argv0 off)\n\
     --subscripts[=MODE]  analyze child invocations (source/. and interpreter\n\
-                         calls). MODE: report (default) | off. Requires a build\n\
-                         with `--features subscripts`.\n\
+                         calls). MODE:\n\
+                           report  detect + list them (default for bare flag)\n\
+                           wrap    also route shell children through scriptbox,\n\
+                                   freezing them too (recursively)\n\
+                           off\n\
+                         Requires a build with `--features subscripts`.\n\
 \n\
     -V, --version    -h, --help\n\
 \n\

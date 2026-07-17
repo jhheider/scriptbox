@@ -180,21 +180,35 @@ SELF="${SCRIPTBOX_SOURCE:-${BASH_SOURCE[0]}}"
 SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 ```
 
-**Subscripts (experimental, opt-in).** v1 freezes only the top-level script; a
-`source`d file or a `bash child.sh` reintroduces the hazard one level down.
-`--subscripts` statically finds those child invocations and *reports* them
-(detection only for now - it doesn't freeze them yet). The analyzer uses a real
-shell parser and is a heavy dependency, so it's behind a non-default build
-feature:
+`SCRIPTBOX_SOURCE` names the script scriptbox launched, but it's an environment
+variable, so a child process *inherits* it - an un-wrapped child that reads it
+sees its parent's path, not its own. `--subscripts=wrap` fixes this for the tree
+(each wrapped child re-sets it); for an un-wrapped child, prefer `${BASH_SOURCE[0]}`
+there.
+
+**Subscripts (experimental, opt-in).** By default scriptbox freezes only the
+top-level script; a `source`d file or a `bash child.sh` reintroduces the hazard
+one level down. `--subscripts` statically finds those child invocations. Two
+modes:
+
+- **`report`** (the bare flag) - detect and list them.
+- **`wrap`** - rewrite resolvable *shell* children (`bash child.sh`, `./x.sh`) to
+  route through scriptbox, so each child is frozen too, recursively. `source`/`.`
+  (in-process), dynamic paths, and already-immune interpreters (python/ruby/node)
+  are reported but left alone.
+
+The analyzer uses a real shell parser and is a heavy dependency, so it's behind a
+non-default build feature; the flag errors without it:
 
 ```sh
 cargo install --features subscripts --git https://github.com/jhheider/scriptbox
-scriptbox --subscripts bash ./deploy.sh    # lists source/. and interpreter calls
+scriptbox --subscripts=wrap bash ./deploy.sh
 ```
 
-Literal paths (`source ./lib.sh`, `bash child.sh`) resolve; paths built from
-variables or command substitution are reported as unresolvable - the same wall
-shellcheck hits, and the eventual answer is a directive or a runtime trace.
+Literal paths resolve; paths built from variables or command substitution are
+reported unresolvable - the same wall shellcheck hits (SC1090), and the eventual
+answer is a directive or a runtime trace. In-process `source` isn't wrapped yet
+(you can't spawn it through scriptbox); freezing it via an fd is the next step.
 
 ## License
 

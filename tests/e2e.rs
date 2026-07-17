@@ -389,3 +389,60 @@ fn subscripts_reports_resolvable_and_dynamic_sites() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+#[cfg(feature = "subscripts")]
+#[test]
+fn subscripts_wrap_freezes_a_shell_child() {
+    if !have("bash") {
+        return;
+    }
+    // The child appends to its own (hardcoded) path mid-run, then finishes.
+    let child = write_script("wrapchild", "");
+    let child_body = format!(
+        "#!/bin/bash\necho CHILD_START\nprintf 'echo CHILD_INJECTED\\n' >> {}\necho CHILD_END\n",
+        child.display()
+    );
+    let parent = write_script(
+        "wrapparent",
+        &format!(
+            "#!/usr/bin/env -S scriptbox bash\nbash {}\n",
+            child.display()
+        ),
+    );
+
+    // report mode: the child runs plain -> vulnerable (the injected line executes).
+    std::fs::write(&child, &child_body).unwrap();
+    let rep = scriptbox()
+        .arg("--subscripts=report")
+        .arg("bash")
+        .arg(&parent)
+        .output()
+        .unwrap();
+    assert!(
+        stdout(&rep).contains("CHILD_INJECTED"),
+        "report: the un-wrapped child should be vulnerable; got {:?}",
+        stdout(&rep)
+    );
+
+    // wrap mode: the child is routed through scriptbox -> frozen (never runs it).
+    std::fs::write(&child, &child_body).unwrap();
+    let wrapped = scriptbox()
+        .arg("--subscripts=wrap")
+        .arg("bash")
+        .arg(&parent)
+        .output()
+        .unwrap();
+    assert!(
+        stdout(&wrapped).contains("CHILD_START") && stdout(&wrapped).contains("CHILD_END"),
+        "child body should still run: {:?}",
+        stdout(&wrapped)
+    );
+    assert!(
+        !stdout(&wrapped).contains("CHILD_INJECTED"),
+        "wrap: the child must be frozen (no injected line); got {:?}",
+        stdout(&wrapped)
+    );
+
+    let _ = std::fs::remove_file(&child);
+    let _ = std::fs::remove_file(&parent);
+}

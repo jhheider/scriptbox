@@ -1,26 +1,27 @@
-//! Subscript analysis (spike): statically find a script's child invocations -
-//! `source`/`.` includes and interpreter calls (`bash x.sh`, `python foo.py`,
-//! `./run.sh`) - so scriptbox can eventually extend immutability to the "tree of
-//! scripts." This is REPORT-ONLY: it detects and prints resolvable call sites;
-//! it does not yet freeze the children.
+//! Subscript analysis: find a script's child invocations - `source`/`.` includes
+//! and interpreter calls (`bash x.sh`, `python foo.py`, `./run.sh`) - and, in
+//! `wrap` mode, route the *shell* children through scriptbox so they're frozen
+//! too (recursively). In `report` mode it just prints what it found.
 //!
-//! The detector uses a real shell parser (`brush-parser`), which is a heavy
-//! dependency, so it lives behind the non-default `subscripts` build feature. A
-//! lean default build omits it entirely, and requesting analysis then errors
-//! with a clear message rather than silently doing nothing.
+//! The detector uses a real shell parser (`brush-parser`), a heavy dependency,
+//! so it lives behind the non-default `subscripts` build feature. A lean default
+//! build omits it entirely, and requesting analysis then errors clearly.
 
+use crate::config::Subscripts;
 use anyhow::Result;
 use std::path::Path;
 
-/// Report statically-resolvable child-script invocations found in `bytes`.
-pub fn report(bytes: &[u8], script: &Path) -> Result<()> {
+/// Apply the requested subscript `mode` to `bytes`, returning the bytes to serve
+/// the interpreter (rewritten under `Wrap`, unchanged under `Report`). Never
+/// called with `Subscripts::Off`.
+pub fn apply(mode: Subscripts, bytes: &[u8], script: &Path) -> Result<Vec<u8>> {
     #[cfg(feature = "subscripts")]
     {
-        detect::report(bytes, script)
+        detect::apply(mode, bytes, script)
     }
     #[cfg(not(feature = "subscripts"))]
     {
-        let _ = (bytes, script);
+        let _ = (mode, bytes, script);
         anyhow::bail!(
             "subscript analysis was requested (--subscripts / `subscripts` frontmatter), \
              but this scriptbox was built without the `subscripts` feature.\n\
@@ -32,69 +33,125 @@ pub fn report(bytes: &[u8], script: &Path) -> Result<()> {
 
 #[cfg(feature = "subscripts")]
 mod detect {
-    use anyhow::Result;
+    use crate::config::Subscripts;
+    use crate::interpreter::shell_squote;
+    use anyhow::{Context, Result};
     use brush_parser::ast;
     use std::path::Path;
 
-    /// A detected child-script invocation.
-    struct Site {
-        kind: &'static str, // "source" | interpreter name | "exec"
-        line: usize,
-        target: String,
-        resolvable: bool, // literal path (vs. contains an expansion)
+    #[derive(PartialEq)]
+    enum Category {
+        Source,     // source / . - runs in-process, can't be spawned through scriptbox
+        ShellChild, // a shell interpreter call or a direct ./x.sh - wrappable
+        OtherChild, // python/ruby/node/... - already immune, not wrapped
     }
 
-    const INTERPRETERS: &[&str] = &[
-        "bash", "sh", "dash", "zsh", "ksh", "mksh", "perl", "ruby", "node", "php", "lua",
-    ];
+    struct Site {
+        label: &'static str,
+        category: Category,
+        line: usize,
+        /// Byte offset of the command word (where a wrap prefix is inserted).
+        offset: usize,
+        target: String,
+        resolvable: bool,
+    }
 
-    pub fn report(bytes: &[u8], script: &Path) -> Result<()> {
-        let src = String::from_utf8_lossy(bytes);
-        let tokens = match brush_parser::tokenize_str(&src) {
-            Ok(t) => t,
+    impl Site {
+        fn wrappable(&self) -> bool {
+            self.category == Category::ShellChild && self.resolvable
+        }
+        fn skip_reason(&self) -> &'static str {
+            if !self.resolvable {
+                "dynamic path"
+            } else {
+                match self.category {
+                    Category::Source => "in-process source",
+                    Category::OtherChild => "already immune",
+                    Category::ShellChild => "",
+                }
+            }
+        }
+    }
+
+    const SHELLS: &[&str] = &["bash", "sh", "dash", "zsh", "ksh", "mksh"];
+    const OTHER_INTERP: &[&str] = &["perl", "ruby", "node", "php", "lua"];
+    const SHELL_EXTS: &[&str] = &[".sh", ".bash", ".zsh", ".ksh"];
+
+    pub fn apply(mode: Subscripts, bytes: &[u8], script: &Path) -> Result<Vec<u8>> {
+        let Ok(src) = std::str::from_utf8(bytes) else {
+            eprintln!(
+                "scriptbox: subscripts: {} is not UTF-8; skipping analysis",
+                script.display()
+            );
+            return Ok(bytes.to_vec());
+        };
+
+        let sites = match parse_sites(src) {
+            Ok(s) => s,
             Err(e) => {
                 eprintln!(
-                    "scriptbox: subscripts: could not tokenize {}: {e}",
+                    "scriptbox: subscripts: could not parse {}: {e}",
                     script.display()
                 );
-                return Ok(()); // report-only; never block the run on a parse hiccup
+                return Ok(bytes.to_vec()); // never block the run on a parse hiccup
             }
         };
-        let program =
-            match brush_parser::parse_tokens(&tokens, &brush_parser::ParserOptions::default()) {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!(
-                        "scriptbox: subscripts: could not parse {}: {e}",
-                        script.display()
-                    );
-                    return Ok(());
-                }
-            };
 
+        match mode {
+            Subscripts::Report => {
+                print_report(script, &sites, false);
+                Ok(bytes.to_vec())
+            }
+            Subscripts::Wrap => {
+                let exe =
+                    std::env::current_exe().context("finding the scriptbox binary to wrap with")?;
+                let exe = exe.to_string_lossy();
+                let out = wrap(src, &sites, &exe);
+                print_report(script, &sites, true);
+                Ok(out.into_bytes())
+            }
+            Subscripts::Off => Ok(bytes.to_vec()),
+        }
+    }
+
+    fn parse_sites(src: &str) -> Result<Vec<Site>> {
+        let tokens = brush_parser::tokenize_str(src).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let program = brush_parser::parse_tokens(&tokens, &brush_parser::ParserOptions::default())
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         let mut cmds = Vec::new();
         for list in &program.complete_commands {
             walk_list(list, &mut cmds);
         }
+        Ok(cmds.into_iter().filter_map(classify).collect())
+    }
 
-        let mut sites = Vec::new();
-        for c in cmds {
-            if let Some(site) = classify(c) {
-                sites.push(site);
+    /// Insert `scriptbox --subscripts=wrap ` before each wrappable child command,
+    /// applied high offset to low so earlier offsets stay valid.
+    fn wrap(src: &str, sites: &[Site], exe: &str) -> String {
+        let prefix = format!("{} --subscripts=wrap ", shell_squote(exe));
+        let mut offsets: Vec<usize> = sites
+            .iter()
+            .filter(|s| s.wrappable())
+            .map(|s| s.offset)
+            .collect();
+        offsets.sort_unstable_by(|a, b| b.cmp(a));
+        let mut out = src.to_string();
+        for off in offsets {
+            if out.is_char_boundary(off) {
+                out.insert_str(off, &prefix);
             }
         }
-
-        print_report(script, &sites);
-        Ok(())
+        out
     }
 
     fn classify(cmd: &ast::SimpleCommand) -> Option<Site> {
         let name_word = cmd.word_or_name.as_ref()?;
         let name = name_word.value.as_str();
-        let line = name_word.loc.as_ref().map(|s| s.start.line).unwrap_or(0);
+        let loc = name_word.loc.as_ref();
+        let line = loc.map(|s| s.start.line).unwrap_or(0);
+        let offset = loc.map(|s| s.start.index).unwrap_or(0);
         let base = name.rsplit('/').next().unwrap_or(name);
 
-        // Suffix words, in order (skipping redirects/assignments).
         let args: Vec<&ast::Word> = cmd
             .suffix
             .as_ref()
@@ -108,53 +165,50 @@ mod detect {
             })
             .unwrap_or_default();
 
+        let site = |label, category, target: &str| Site {
+            label,
+            category,
+            line,
+            offset,
+            target: target.to_string(),
+            resolvable: is_literal(target),
+        };
+
         if name == "source" || name == "." {
-            let target = args.first()?;
-            return Some(Site {
-                kind: "source",
-                line,
-                target: target.value.clone(),
-                resolvable: is_literal(&target.value),
-            });
+            let t = args.first()?;
+            return Some(site("source", Category::Source, &t.value));
         }
 
-        if INTERPRETERS.contains(&base) || base.starts_with("python") {
-            // `-c '...'` runs an inline string, not a file child: skip.
+        if SHELLS.contains(&base) || OTHER_INTERP.contains(&base) || base.starts_with("python") {
             if args.iter().any(|w| w.value == "-c") {
-                return None;
+                return None; // inline `-c '...'`, no file child
             }
-            let target = args.iter().find(|w| !w.value.starts_with('-'))?;
-            return Some(Site {
-                kind: interpreter_label(base),
-                line,
-                target: target.value.clone(),
-                resolvable: is_literal(&target.value),
-            });
+            let t = args.iter().find(|w| !w.value.starts_with('-'))?;
+            let cat = if SHELLS.contains(&base) {
+                Category::ShellChild
+            } else {
+                Category::OtherChild
+            };
+            return Some(site(interpreter_label(base), cat, &t.value));
         }
 
-        // A bare path to a script executed directly: `./run.sh`, `/opt/x.sh`.
-        if (name.starts_with("./") || name.starts_with("../") || name.starts_with('/'))
-            && looks_scripty(name)
-        {
-            return Some(Site {
-                kind: "exec",
-                line,
-                target: name.to_string(),
-                resolvable: is_literal(name),
-            });
+        // A path executed directly: `./run.sh`, `/opt/tools.py`.
+        if name.starts_with("./") || name.starts_with("../") || name.starts_with('/') {
+            if SHELL_EXTS.iter().any(|e| name.ends_with(e)) {
+                return Some(site("exec", Category::ShellChild, name));
+            }
+            if [".py", ".pl", ".rb", ".js"]
+                .iter()
+                .any(|e| name.ends_with(e))
+            {
+                return Some(site("exec", Category::OtherChild, name));
+            }
         }
         None
     }
 
-    /// A word is statically resolvable if it carries no shell expansion.
     fn is_literal(w: &str) -> bool {
         !w.contains('$') && !w.contains('`')
-    }
-
-    fn looks_scripty(p: &str) -> bool {
-        [".sh", ".bash", ".zsh", ".ksh", ".py", ".pl", ".rb", ".js"]
-            .iter()
-            .any(|ext| p.ends_with(ext))
     }
 
     fn interpreter_label(base: &str) -> &'static str {
@@ -173,35 +227,33 @@ mod detect {
         }
     }
 
-    fn print_report(script: &Path, sites: &[Site]) {
+    fn print_report(script: &Path, sites: &[Site], wrapping: bool) {
         if sites.is_empty() {
             eprintln!(
-                "scriptbox: subscripts: no child invocations found in {} (spike; detection only)",
+                "scriptbox: subscripts: no child invocations in {}",
                 script.display()
             );
             return;
         }
-        eprintln!(
-            "scriptbox: subscripts in {} (spike; detection only, nothing is frozen):",
-            script.display()
-        );
-        let mut dynamic = 0;
+        let verb = if wrapping {
+            "wrapping"
+        } else {
+            "detection only"
+        };
+        eprintln!("scriptbox: subscripts in {} ({verb}):", script.display());
         for s in sites {
-            let note = if s.resolvable {
-                "resolvable"
+            let status = if wrapping && s.wrappable() {
+                "wrapped".to_string()
+            } else if wrapping {
+                format!("left - {}", s.skip_reason())
+            } else if s.resolvable {
+                "resolvable".to_string()
             } else {
-                dynamic += 1;
-                "dynamic - needs a directive or runtime trace"
+                "dynamic".to_string()
             };
             eprintln!(
-                "  [{:<7}] line {:<4} {}  ({note})",
-                s.kind, s.line, s.target
-            );
-        }
-        if dynamic > 0 {
-            eprintln!(
-                "  {dynamic} dynamic site(s) can't be resolved statically (paths built from \
-                 variables/command-substitution)."
+                "  [{:<6}] line {:<4} {}  ({status})",
+                s.label, s.line, s.target
             );
         }
     }
@@ -257,6 +309,42 @@ mod detect {
             }
             // Case / arithmetic / coproc: not descended in the spike.
             _ => {}
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn wrap_rewrites_shell_children_but_not_source_or_immune_or_dynamic() {
+            let src = "#!/bin/bash\n\
+                       source ./lib.sh\n\
+                       bash child.sh a\n\
+                       python foo.py\n\
+                       ./step.sh\n\
+                       bash \"$X\"\n";
+            let sites = parse_sites(src).unwrap();
+            let out = wrap(src, &sites, "/usr/local/bin/scriptbox");
+            // Shell subprocess + shell exec are wrapped (exe is shell-quoted).
+            assert!(
+                out.contains("scriptbox' --subscripts=wrap bash child.sh"),
+                "got:\n{out}"
+            );
+            assert!(
+                out.contains("scriptbox' --subscripts=wrap ./step.sh"),
+                "got:\n{out}"
+            );
+            // ...source, immune python, and dynamic bash are left alone.
+            assert!(out.contains("\nsource ./lib.sh\n"));
+            assert!(out.contains("\npython foo.py\n"));
+            assert!(out.contains("bash \"$X\"") && !out.contains("wrap bash \"$X\""));
+        }
+
+        #[test]
+        fn inline_dash_c_is_not_a_child() {
+            let sites = parse_sites("bash -c 'echo hi'\n").unwrap();
+            assert!(sites.is_empty());
         }
     }
 }
