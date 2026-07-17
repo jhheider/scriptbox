@@ -15,11 +15,8 @@ jobs:
   ci:
     uses: jhheider/rust-ci/.github/workflows/ci.yml@v1
     with:
-      # Private repo: everything runs on the self-hosted arm64 Linux runner
-      # (free), which exercises the memfd path. The macOS `/dev/fd`
-      # open-then-unlink path is covered by local testing for now; add
-      # "macos-latest" back to `os` once hosted Actions minutes are available.
-      os: '["self-hosted"]'
-      runs-on: self-hosted
+      # POSIX only: Linux (memfd path) + macOS (/dev/fd open-then-unlink path),
+      # no Windows. Public repo => free hosted runners.
+      os: '["ubuntu-latest","macos-latest"]'
       coverage: true
     secrets: inherit
