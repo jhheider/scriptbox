@@ -39,6 +39,8 @@ struct Plan {
     cache: Option<String>,
     /// Wrap-recursion depth to export as `$SCRIPTBOX_DEPTH` for children.
     depth: Option<u32>,
+    /// Immutable fds backing frozen `source` includes, held open until `exec`.
+    _source_fds: Vec<loader::ImmutableScript>,
     /// The immutable copy, kept alive (and thus its fd open) until `exec`.
     immutable: loader::ImmutableScript,
 }
@@ -110,11 +112,18 @@ fn plan(spec: &RunSpec) -> Result<Plan> {
     let argv0 = resolve_argv0(spec, &fm)?;
 
     // Subscript rewriting (opt-in). `Wrap`/`FreezeTree` return bytes with shell
-    // children routed through scriptbox; `Report` returns them unchanged.
-    let bytes = if subs == Subscripts::Off {
-        bytes
+    // children routed through scriptbox and `source` includes frozen into held
+    // fds; `Report` returns them unchanged.
+    let (bytes, source_fds) = if subs == Subscripts::Off {
+        (bytes, Vec::new())
     } else {
-        subscripts::apply(subs, &bytes, &spec.script)?
+        let applied = subscripts::apply(
+            subs,
+            &bytes,
+            &spec.script,
+            cache.as_deref().map(std::path::Path::new),
+        )?;
+        (applied.bytes, applied.held)
     };
 
     let (interp, interp_args) = resolve_interpreter(spec, &fm, &bytes);
@@ -150,6 +159,7 @@ fn plan(spec: &RunSpec) -> Result<Plan> {
         cache,
         // Children of a wrapped run inherit an incremented depth counter.
         depth: wrapping.then(|| depth + 1),
+        _source_fds: source_fds,
         immutable,
     })
 }

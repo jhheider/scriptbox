@@ -507,3 +507,50 @@ fn freeze_tree_ignores_a_cross_invocation_edit() {
     let _ = std::fs::remove_file(&a);
     let _ = std::fs::remove_file(&b);
 }
+
+#[cfg(feature = "subscripts")]
+#[test]
+fn source_freeze_insulates_a_streaming_source() {
+    // zsh's `source` streams, so a self-editing sourced file is vulnerable;
+    // scriptbox freezes the include into an fd and rewrites `source /dev/fd/N`.
+    if !have("zsh") {
+        return;
+    }
+    let lib = write_script("srclib", "");
+    let lib_body = format!(
+        "echo LIB_START\nprintf 'echo LIB_INJECTED\\n' >> {}\necho LIB_END\n",
+        lib.display()
+    );
+    let caller = write_script(
+        "srccaller",
+        &format!(
+            "#!/usr/bin/env -S scriptbox zsh\nsource {}\n",
+            lib.display()
+        ),
+    );
+
+    // Control: plain zsh streams the source -> the injected line runs.
+    std::fs::write(&lib, &lib_body).unwrap();
+    let plain = Command::new("zsh").arg(&caller).output().unwrap();
+    if !stdout(&plain).contains("LIB_INJECTED") {
+        return; // this zsh buffers source; nothing to insulate here
+    }
+
+    // scriptbox freezes the include -> the injected line does not run.
+    std::fs::write(&lib, &lib_body).unwrap();
+    let out = scriptbox()
+        .arg("--subscripts=wrap")
+        .arg("zsh")
+        .arg(&caller)
+        .output()
+        .unwrap();
+    assert!(stdout(&out).contains("LIB_START") && stdout(&out).contains("LIB_END"));
+    assert!(
+        !stdout(&out).contains("LIB_INJECTED"),
+        "source-freeze must insulate the streaming source; got {:?}",
+        stdout(&out)
+    );
+
+    let _ = std::fs::remove_file(&lib);
+    let _ = std::fs::remove_file(&caller);
+}

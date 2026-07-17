@@ -16,6 +16,9 @@ jobs:
       bin-name: scriptbox
       tag: ${{ github.event.inputs.tag }}
       # POSIX-only: musl (linux) + darwin, no Windows.
+      # Ship FULL-featured binaries (subscripts analyzer included), even though
+      # the crate's default features stay lean for `cargo install`.
+      features: subscripts
       include-files: "README.md LICENSE-MIT LICENSE-APACHE"
       # Homebrew tap is on; crates.io is intentionally deferred (publish-crates
       # stays off / default) until we decide to claim the crates.io name.

@@ -192,9 +192,11 @@ one level down. `--subscripts` statically finds those child invocations. Two
 modes:
 
 - **`report`** (the bare flag) - detect and list them.
-- **`wrap`** - rewrite resolvable *shell* children (`bash child.sh`, `./x.sh`) to
-  route through scriptbox, so each child is frozen too, recursively. Each
-  invocation freezes its target fresh from disk.
+- **`wrap`** - route resolvable *shell* children (`bash child.sh`, `./x.sh`)
+  through scriptbox so each is frozen too (recursively), and freeze resolvable
+  `source`/`.` includes into an inherited immutable fd (`source /dev/fd/N`) - so
+  a streaming source (zsh's does stream) can't change out from under the caller
+  either. Each invocation freezes fresh from disk.
 - **`freeze-tree`** - like `wrap`, but backed by a launch-scoped, read-only
   (mode 0400), pin-on-copy snapshot cache keyed by canonical path. The whole
   reachable tree is frozen at first encounter and every invocation reuses the
@@ -203,22 +205,22 @@ modes:
   ignoring intra-run edits. Wrapped trees also carry a depth counter that caps
   runaway mutual recursion instead of fork-bombing.
 
-In all cases `source`/`.` (in-process), dynamic paths, and already-immune
-interpreters (python/ruby/node) are reported but left alone. The analyzer uses a
-real shell parser and is a heavy dependency, so it's behind a non-default build
-feature; the flag errors without it:
+Dynamic paths and already-immune interpreters (python/ruby/node) are reported but
+left alone. The analyzer uses a real shell parser (a heavy dependency), so it's a
+non-default feature - **the prebuilt binaries (Homebrew, the curl installer, the
+release archives) include it**; only a from-source `cargo install` is lean:
 
 ```sh
-cargo install --features subscripts --git https://github.com/jhheider/scriptbox
-scriptbox --subscripts=freeze-tree bash ./deploy.sh
+scriptbox --subscripts=freeze-tree bash ./deploy.sh        # brew/curl binaries
+cargo install --features subscripts --git https://github.com/jhheider/scriptbox  # from source
+scriptbox gc                                                # reap freeze-tree caches
 ```
 
 Literal paths resolve; paths built from variables or command substitution are
 reported unresolvable - the same wall shellcheck hits (SC1090), and the eventual
-answer is a directive or a runtime trace. Two known spike gaps: in-process
-`source` isn't wrapped yet (you can't spawn it through scriptbox - freezing it
-via an fd is next), and the `freeze-tree` cache dir isn't cleaned up on exit
-(the root `exec`s away), so it lingers in `$TMPDIR`.
+answer is a directive or a runtime trace. The remaining rough edge: the
+`freeze-tree` cache dir isn't reaped automatically (the root `exec`s away), so
+run `scriptbox gc` to clear stale caches from `$TMPDIR`.
 
 ## License
 

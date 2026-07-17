@@ -25,6 +25,7 @@ enum Action {
     Run(run::RunSpec),
     Hash(PathBuf),
     Pin(PathBuf),
+    Gc,
     Version,
     Help,
 }
@@ -43,6 +44,7 @@ fn real_main() -> Result<()> {
         Action::Help => usage(),
         Action::Hash(p) => pin::hash(&p)?,
         Action::Pin(p) => pin::pin(&p)?,
+        Action::Gc => cache::gc()?,
         // On success `run` never returns (it execs); it only returns `Err`.
         Action::Run(spec) => match run::run(spec)? {},
     }
@@ -60,6 +62,7 @@ fn parse(args: &[String]) -> Result<Action> {
         Some("--help" | "-h") => Ok(Action::Help),
         Some("hash") => Ok(Action::Hash(script_arg(args, "hash")?)),
         Some("pin") => Ok(Action::Pin(script_arg(args, "pin")?)),
+        Some("gc") => Ok(Action::Gc),
         _ => parse_run(args),
     }
 }
@@ -165,6 +168,7 @@ USAGE:\n\
     scriptbox [FLAGS] [INTERPRETER [IARGS...]] <SCRIPT> [ARGS...]\n\
     scriptbox pin  <SCRIPT>     print a pin-able `# /// scriptbox` block\n\
     scriptbox hash <SCRIPT>     print the script's sha256 pin\n\
+    scriptbox gc                remove freeze-tree snapshot caches from $TMPDIR\n\
 \n\
 SHEBANG:\n\
     #!/usr/bin/env -S scriptbox bash      interpreter on the shebang line\n\

@@ -16,6 +16,51 @@ use std::path::{Path, PathBuf};
 use crate::checksum;
 
 pub const ENV_VAR: &str = "SCRIPTBOX_CACHE";
+const PREFIX: &str = "scriptbox-cache.";
+
+fn base_dir() -> PathBuf {
+    std::env::var_os("TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+}
+
+/// Remove all `freeze-tree` snapshot cache directories from `$TMPDIR`. Since the
+/// root `exec`s away, a tree can't clean up after itself; this is the manual
+/// reaper (`scriptbox gc`). Run it when no scriptbox trees are active.
+pub fn gc() -> Result<()> {
+    let base = base_dir();
+    let mut removed = 0usize;
+    let entries = match std::fs::read_dir(&base) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            println!("no cache directories under {}", base.display());
+            return Ok(());
+        }
+        Err(e) => return Err(e).with_context(|| format!("reading {}", base.display())),
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with(PREFIX) || !entry.path().is_dir() {
+            continue;
+        }
+        match std::fs::remove_dir_all(entry.path()) {
+            Ok(()) => {
+                removed += 1;
+                println!("removed {}", entry.path().display());
+            }
+            Err(e) => eprintln!(
+                "scriptbox: gc: could not remove {}: {e}",
+                entry.path().display()
+            ),
+        }
+    }
+    println!(
+        "removed {removed} cache director{}",
+        if removed == 1 { "y" } else { "ies" }
+    );
+    Ok(())
+}
 
 /// Get the cache directory from the environment, or create a fresh one. The
 /// returned path should be exported as `$SCRIPTBOX_CACHE` on the interpreter so
@@ -24,12 +69,10 @@ pub fn get_or_create() -> Result<PathBuf> {
     if let Some(d) = std::env::var_os(ENV_VAR) {
         return Ok(PathBuf::from(d));
     }
-    let base = std::env::var_os("TMPDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    let base = base_dir();
     let pid = std::process::id();
     for n in 0..128u32 {
-        let dir = base.join(format!("scriptbox-cache.{pid}.{n}"));
+        let dir = base.join(format!("{PREFIX}{pid}.{n}"));
         match std::fs::create_dir(&dir) {
             Ok(()) => {
                 std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
