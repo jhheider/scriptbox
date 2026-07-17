@@ -21,7 +21,9 @@ step 2: DELETE PROD                             # you never wrote step 2. it ran
 ```
 
 `bash`, `zsh`, `dash`, and `ksh` all do this - POSIX practically requires it.
-Everything is fine until the one time it isn't.
+Everything is fine until the one time it isn't. (Shells that parse the whole
+file first - fish, nushell, and every non-shell like python/ruby/node - are
+already immune, so scriptbox doesn't wrap them.)
 
 Change one line, the shebang, and the file is frozen the moment it starts:
 
@@ -90,10 +92,30 @@ installed (it's all `#` comments):
 
 Or explicitly: `scriptbox bash ./job.sh arg1 arg2`.
 
+### Switches
+
+Behaviour toggles are settable two ways with the same names - a CLI flag or a
+`# /// scriptbox` key - and a flag beats frontmatter beats the default:
+
+| Switch | Flag | Frontmatter | Modes (default first) |
+|--------|------|-------------|------------------------|
+| `$0` handling | `--argv0 <mode>` | `argv0 = "<mode>"` | `rewrite`, `source`, `off` |
+| subscript analysis | `--subscripts` | `subscripts = "report"` | `off`, `report` |
+
+```sh
+#!/usr/bin/env scriptbox
+# /// scriptbox
+# interpreter = "dash"
+# argv0 = "source"       # real $0 on dash/ksh too (see Internal details)
+# checksum = "sha256:1f0c..."
+# ///
+```
+
 ### Pinning
 
-`scriptbox pin` computes the checksum *excluding the checksum line itself*, so
-pasting it back doesn't invalidate it - no fixpoint to chase:
+`scriptbox pin` computes the checksum *excluding the entire frontmatter block*,
+so pasting it back doesn't invalidate it - and flipping a switch later doesn't
+either. Only the shebang and script body are pinned.
 
 ```console
 $ scriptbox pin job.sh
@@ -101,7 +123,9 @@ $ scriptbox pin job.sh
 ```
 
 Drop that into the `# /// scriptbox` block. From then on, any drift in the file's
-other bytes makes scriptbox refuse to run it until you re-pin.
+body makes scriptbox refuse to run it until you re-pin. (An interpreter set only
+in frontmatter isn't covered by the pin - put it on the shebang if you need it
+pinned too.)
 
 ## What this is, and isn't
 
@@ -127,17 +151,25 @@ the mutable original.
 **Interpreter precedence:** shebang-line argument > frontmatter `interpreter` >
 the script's own shebang > `/bin/sh`.
 
-**`$0` and `${BASH_SOURCE[0]}`.** Because the interpreter reads from an fd path,
-`$0` and `${BASH_SOURCE[0]}` would otherwise show that fd path. scriptbox always
-exports `$SCRIPTBOX_SOURCE` with the real path, and rewrites `$0` back to it where
-the shell supports an in-run reset (default; disable with `--no-argv0-rewrite`):
+**`$0` and `${BASH_SOURCE[0]}` - the `--argv0` switch.** Because the interpreter
+reads from an fd path, `$0`/`${BASH_SOURCE[0]}` would otherwise show that fd path.
+`$SCRIPTBOX_SOURCE` (the real path) is always exported; `--argv0` chooses how `$0`
+itself is set:
 
-| Shell | `$0` after rewrite | how |
-|-------|--------------------|-----|
-| bash >= 5 | real path | `BASH_ARGV0` |
-| bash 3.2 (macOS `/bin/bash`) | fd path | no mechanism; use `$SCRIPTBOX_SOURCE` |
-| zsh | real path | `0=` |
-| dash / ksh / sh | fd path | no mechanism; use `$SCRIPTBOX_SOURCE` |
+- **`rewrite`** (default) - an in-run reset where the shell supports it. Preserves
+  run-mode semantics and line numbers.
+- **`source`** - runs the script via `<sh> -c '. <fd> "$@"' <realpath>`, giving the
+  real `$0` on *every* POSIX shell (dash/ksh/bash-3.2 included). The trade: it runs
+  in sourced mode (top-level `return` becomes legal; the `[[ "${BASH_SOURCE[0]}" ==
+  "$0" ]]` sourced-or-executed idiom flips).
+- **`off`** - leave `$0` as the fd path.
+
+| Shell | `rewrite` | `source` | how |
+|-------|-----------|----------|-----|
+| bash >= 5 | real path | real path | `BASH_ARGV0` / dot-source |
+| bash 3.2 (macOS `/bin/bash`) | fd path | real path | dot-source only |
+| zsh | real path | real path | `0=` / dot-source |
+| dash / ksh / sh | fd path | real path | dot-source only |
 
 `${BASH_SOURCE[0]}` (bash) and `${.sh.file}` (ksh) always show the fd path - they
 reflect the file actually opened, which is the immutable copy. For self-locating
@@ -148,9 +180,21 @@ SELF="${SCRIPTBOX_SOURCE:-${BASH_SOURCE[0]}}"
 SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 ```
 
-Rewriting `$0` makes the `[[ "${BASH_SOURCE[0]}" == "$0" ]]`
-"sourced-or-executed?" idiom see them differ; pass `--no-argv0-rewrite` if a
-script relies on it.
+**Subscripts (experimental, opt-in).** v1 freezes only the top-level script; a
+`source`d file or a `bash child.sh` reintroduces the hazard one level down.
+`--subscripts` statically finds those child invocations and *reports* them
+(detection only for now - it doesn't freeze them yet). The analyzer uses a real
+shell parser and is a heavy dependency, so it's behind a non-default build
+feature:
+
+```sh
+cargo install --features subscripts --git https://github.com/jhheider/scriptbox
+scriptbox --subscripts bash ./deploy.sh    # lists source/. and interpreter calls
+```
+
+Literal paths (`source ./lib.sh`, `bash child.sh`) resolve; paths built from
+variables or command substitution are reported as unresolvable - the same wall
+shellcheck hits, and the eventual answer is a directive or a runtime trace.
 
 ## License
 

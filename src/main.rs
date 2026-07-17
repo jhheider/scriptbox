@@ -4,14 +4,17 @@
 //! changes what executes past the current line.
 
 mod checksum;
+mod config;
 mod frontmatter;
 mod interpreter;
 mod loader;
 mod pin;
 mod run;
 mod shebang;
+mod subscripts;
 
 use anyhow::{Result, bail};
+use config::{Argv0, Subscripts};
 use std::path::{Path, PathBuf};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -73,16 +76,36 @@ fn script_arg(args: &[String], sub: &str) -> Result<PathBuf> {
 /// before it is the interpreter + its flags, anything after it goes to the
 /// script.
 fn parse_run(args: &[String]) -> Result<Action> {
-    let mut rewrite_argv0 = true;
-    let mut rest = args;
-    while let Some(flag) = rest.first() {
-        match flag.as_str() {
-            "--argv0-rewrite" => rewrite_argv0 = true,
-            "--no-argv0-rewrite" => rewrite_argv0 = false,
-            _ => break,
+    // Leading scriptbox switches. Each accepts `--flag value` or `--flag=value`;
+    // both surfaces (here and frontmatter) share the same vocabulary, and a flag
+    // set here wins over frontmatter.
+    let mut argv0: Option<Argv0> = None;
+    let mut subscripts: Option<Subscripts> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let flag = args[i].as_str();
+        if let Some(v) = flag.strip_prefix("--argv0=") {
+            argv0 = Some(Argv0::parse(v)?);
+        } else if flag == "--argv0" {
+            let v = args
+                .get(i + 1)
+                .ok_or_else(|| anyhow::anyhow!("--argv0 needs a mode: rewrite | source | off"))?;
+            argv0 = Some(Argv0::parse(v)?);
+            i += 1;
+        } else if flag == "--no-argv0-rewrite" {
+            argv0 = Some(Argv0::Off); // alias for --argv0=off
+        } else if let Some(v) = flag.strip_prefix("--subscripts=") {
+            subscripts = Some(Subscripts::parse(v)?);
+        } else if flag == "--subscripts" {
+            subscripts = Some(Subscripts::Report);
+        } else if flag == "--no-subscripts" {
+            subscripts = Some(Subscripts::Off);
+        } else {
+            break;
         }
-        rest = &rest[1..];
+        i += 1;
     }
+    let rest = &args[i..];
 
     // Interpreters (`/bin/bash`, a pkgx Mach-O) are ELF/Mach-O; scripts are text.
     // This lets the interpreter be given as a bare name (`bash`) or a full path
@@ -105,7 +128,8 @@ fn parse_run(args: &[String]) -> Result<Action> {
         interp_override: rest[..script_idx].to_vec(),
         script: PathBuf::from(&rest[script_idx]),
         script_args: rest[script_idx + 1..].to_vec(),
-        rewrite_argv0,
+        argv0,
+        subscripts,
     }))
 }
 
@@ -145,11 +169,18 @@ SHEBANG:\n\
     #!/usr/bin/env -S scriptbox bash      interpreter on the shebang line\n\
     #!/usr/bin/env scriptbox              + `# /// scriptbox` frontmatter\n\
 \n\
-FLAGS:\n\
-    --no-argv0-rewrite   keep $0 as the fd path (default: rewrite to the real\n\
-                         path for bash/zsh; other shells always see the fd path)\n\
-    -V, --version\n\
-    -h, --help\n\
+SWITCHES (also settable in the `# /// scriptbox` block; a flag wins):\n\
+    --argv0 <mode>       how $0 is set. modes:\n\
+                           rewrite  in-run reset where supported (default)\n\
+                           source   dot-source for a real $0 on every POSIX\n\
+                                    shell, at the cost of sourced-mode semantics\n\
+                           off      leave $0 as the fd path\n\
+                         (--no-argv0-rewrite is an alias for --argv0 off)\n\
+    --subscripts[=MODE]  analyze child invocations (source/. and interpreter\n\
+                         calls). MODE: report (default) | off. Requires a build\n\
+                         with `--features subscripts`.\n\
+\n\
+    -V, --version    -h, --help\n\
 \n\
 Self-locating scripts should read $SCRIPTBOX_SOURCE (the real path) - e.g.\n\
     SELF=\"${{SCRIPTBOX_SOURCE:-${{BASH_SOURCE[0]}}}}\"\n"
@@ -216,7 +247,8 @@ mod tests {
         assert_eq!(spec.interp_override, vec!["bash"]);
         assert_eq!(spec.script, s);
         assert_eq!(spec.script_args, vec!["one", "two"]);
-        assert!(spec.rewrite_argv0);
+        assert_eq!(spec.argv0, None); // no switch -> defer to frontmatter/default
+        assert_eq!(spec.subscripts, None);
         let _ = std::fs::remove_file(&s);
     }
 
@@ -236,14 +268,31 @@ mod tests {
     }
 
     #[test]
-    fn no_argv0_rewrite_flag_is_consumed() {
+    fn switch_flags_are_parsed_and_consumed() {
         let s = tmp("flag.sh", b"#!/bin/bash\n:\n");
-        let a = parse(&argv(&["--no-argv0-rewrite", "bash", s.to_str().unwrap()])).unwrap();
-        let Action::Run(spec) = a else {
-            panic!("expected Run")
+        let sp = s.to_str().unwrap();
+
+        // --no-argv0-rewrite alias, and =value + space forms.
+        let Action::Run(a) = parse(&argv(&["--no-argv0-rewrite", "bash", sp])).unwrap() else {
+            panic!()
         };
-        assert!(!spec.rewrite_argv0);
-        assert_eq!(spec.interp_override, vec!["bash"]);
+        assert_eq!(a.argv0, Some(Argv0::Off));
+        assert_eq!(a.interp_override, vec!["bash"]);
+
+        let Action::Run(b) = parse(&argv(&["--argv0=source", "dash", sp])).unwrap() else {
+            panic!()
+        };
+        assert_eq!(b.argv0, Some(Argv0::Source));
+
+        let Action::Run(c) = parse(&argv(&["--argv0", "off", "--subscripts", "bash", sp])).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(c.argv0, Some(Argv0::Off));
+        assert_eq!(c.subscripts, Some(Subscripts::Report));
+
+        // A bad mode is a clear error.
+        assert!(parse(&argv(&["--argv0=nonsense", "bash", sp])).is_err());
         let _ = std::fs::remove_file(&s);
     }
 

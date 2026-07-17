@@ -1,13 +1,14 @@
 //! The run path: read -> verify -> pin bytes into an immutable fd -> exec the
 //! real interpreter against that fd (never the mutable original path).
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use std::convert::Infallible;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::{checksum, frontmatter, interpreter, loader, shebang};
+use crate::config::{Argv0, Subscripts};
+use crate::{checksum, frontmatter, interpreter, loader, shebang, subscripts};
 
 /// A fully-parsed request to run a script.
 pub struct RunSpec {
@@ -17,8 +18,10 @@ pub struct RunSpec {
     pub interp_override: Vec<String>,
     pub script: PathBuf,
     pub script_args: Vec<String>,
-    /// Reset `$0` to the real path where the interpreter supports it.
-    pub rewrite_argv0: bool,
+    /// `$0` handling; `None` = defer to frontmatter, then the default.
+    pub argv0: Option<Argv0>,
+    /// Subscript analysis; `None` = defer to frontmatter, then the default.
+    pub subscripts: Option<Subscripts>,
 }
 
 /// Everything needed to launch the interpreter, computed without any
@@ -61,15 +64,41 @@ fn plan(spec: &RunSpec) -> Result<Plan> {
         }
     }
 
+    // Resolve the switches: CLI flag > frontmatter > default.
+    let argv0 = resolve_argv0(spec, &fm)?;
+    let subs = resolve_subscripts(spec, &fm)?;
+
+    // Subscript analysis (opt-in; errors if requested but built without the
+    // `subscripts` feature). Report-only for now: it doesn't freeze children.
+    if subs == Subscripts::Report {
+        subscripts::report(&bytes, &spec.script)?;
+    }
+
     let (interp, interp_args) = resolve_interpreter(spec, &fm, &bytes);
 
-    let served = interpreter::prepare_bytes(&bytes, &interp, &source, spec.rewrite_argv0);
+    // Only `Rewrite` mode alters the served bytes; `Source`/`Off` serve verbatim.
+    let served = interpreter::prepare_bytes(&bytes, &interp, &source, argv0 == Argv0::Rewrite);
     let immutable = loader::immutable(&served)?;
 
-    // interp [interp_args...] <fd_path> [script_args...]
     let mut argv = interp_args;
-    argv.push(immutable.fd_path.clone());
-    argv.extend(spec.script_args.iter().cloned());
+    match argv0 {
+        Argv0::Source => {
+            // interp [iflags] -c '. <fd> "$@"' <realpath> [script_args...]
+            // `<realpath>` becomes $0; `"$@"` expands to the script's args.
+            argv.push("-c".to_string());
+            argv.push(format!(
+                ". {} \"$@\"",
+                interpreter::shell_squote(&immutable.fd_path)
+            ));
+            argv.push(source.clone());
+            argv.extend(spec.script_args.iter().cloned());
+        }
+        Argv0::Rewrite | Argv0::Off => {
+            // interp [iflags] <fd_path> [script_args...]
+            argv.push(immutable.fd_path.clone());
+            argv.extend(spec.script_args.iter().cloned());
+        }
+    }
 
     Ok(Plan {
         interp,
@@ -77,6 +106,26 @@ fn plan(spec: &RunSpec) -> Result<Plan> {
         source,
         immutable,
     })
+}
+
+fn resolve_argv0(spec: &RunSpec, fm: &frontmatter::Frontmatter) -> Result<Argv0> {
+    if let Some(m) = spec.argv0 {
+        return Ok(m);
+    }
+    match &fm.argv0 {
+        Some(s) => Argv0::parse(s).context("frontmatter `argv0`"),
+        None => Ok(Argv0::DEFAULT),
+    }
+}
+
+fn resolve_subscripts(spec: &RunSpec, fm: &frontmatter::Frontmatter) -> Result<Subscripts> {
+    if let Some(m) = spec.subscripts {
+        return Ok(m);
+    }
+    match &fm.subscripts {
+        Some(s) => Subscripts::parse(s).context("frontmatter `subscripts`"),
+        None => Ok(Subscripts::DEFAULT),
+    }
 }
 
 /// Execute the script. On success this never returns (the process image is
@@ -129,11 +178,12 @@ mod tests {
                 interp_override: interp_override.iter().map(|s| s.to_string()).collect(),
                 script: PathBuf::from("x.sh"),
                 script_args: vec![],
-                rewrite_argv0: true,
+                argv0: None,
+                subscripts: None,
             },
             frontmatter::Frontmatter {
                 interpreter: bytes_interp.map(String::from),
-                checksum: None,
+                ..Default::default()
             },
         )
     }
@@ -176,19 +226,20 @@ mod tests {
         p
     }
 
-    fn run_spec(script: PathBuf, interp: &[&str], rewrite: bool) -> RunSpec {
+    fn run_spec(script: PathBuf, interp: &[&str], argv0: Argv0) -> RunSpec {
         RunSpec {
             interp_override: interp.iter().map(|s| s.to_string()).collect(),
             script,
             script_args: vec!["A".into(), "B".into()],
-            rewrite_argv0: rewrite,
+            argv0: Some(argv0),
+            subscripts: None,
         }
     }
 
     #[test]
     fn plan_builds_argv_and_freezes_the_bytes() {
         let path = tmp("#!/bin/bash\necho hi\n");
-        let p = plan(&run_spec(path.clone(), &["bash"], false)).unwrap();
+        let p = plan(&run_spec(path.clone(), &["bash"], Argv0::Off)).unwrap();
         assert_eq!(p.interp, "bash");
         // argv = [fd_path, A, B]  (no interp flags here)
         assert_eq!(p.argv.len(), 3);
@@ -209,7 +260,7 @@ mod tests {
     #[test]
     fn plan_applies_argv0_rewrite_to_the_served_copy() {
         let path = tmp("#!/usr/bin/env -S scriptbox bash\necho hi\n");
-        let p = plan(&run_spec(path.clone(), &["bash"], true)).unwrap();
+        let p = plan(&run_spec(path.clone(), &["bash"], Argv0::Rewrite)).unwrap();
         let served = String::from_utf8(std::fs::read(&p.immutable.fd_path).unwrap()).unwrap();
         // Line 1 swapped for the BASH_ARGV0 reset; line 2 preserved.
         assert!(served.starts_with("BASH_ARGV0="), "got: {served:?}");
@@ -221,7 +272,7 @@ mod tests {
     fn plan_refuses_on_checksum_mismatch() {
         let path =
             tmp("#!/bin/bash\n# /// scriptbox\n# checksum = \"sha256:deadbeef\"\n# ///\necho hi\n");
-        let err = plan(&run_spec(path.clone(), &["bash"], false))
+        let err = plan(&run_spec(path.clone(), &["bash"], Argv0::Off))
             .err()
             .expect("checksum mismatch should be an error");
         assert!(format!("{err:#}").contains("checksum mismatch"));
@@ -235,7 +286,7 @@ mod tests {
             "#!/bin/bash\n# /// scriptbox\n# checksum = \"PLACEHOLDER\"\n# ///\necho hi\n";
         let pin = checksum::pin_of(template.as_bytes());
         let path = tmp(&template.replace("PLACEHOLDER", &pin));
-        assert!(plan(&run_spec(path.clone(), &["bash"], false)).is_ok());
+        assert!(plan(&run_spec(path.clone(), &["bash"], Argv0::Off)).is_ok());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -244,8 +295,26 @@ mod tests {
         let path = tmp(
             "#!/usr/bin/env scriptbox\n# /// scriptbox\n# interpreter = \"zsh\"\n# ///\necho hi\n",
         );
-        let p = plan(&run_spec(path.clone(), &[], false)).unwrap();
+        let p = plan(&run_spec(path.clone(), &[], Argv0::Off)).unwrap();
         assert_eq!(p.interp, "zsh");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn plan_source_mode_builds_a_dot_source_invocation() {
+        let path = tmp("#!/usr/bin/env -S scriptbox dash\necho hi\n");
+        let p = plan(&run_spec(path.clone(), &["dash"], Argv0::Source)).unwrap();
+        // argv = [-c, ". <fd> \"$@\"", <realpath>, A, B]
+        assert_eq!(p.argv[0], "-c");
+        assert!(p.argv[1].starts_with(". ") && p.argv[1].ends_with("\"$@\""));
+        assert!(p.argv[1].contains("/dev/fd/") || p.argv[1].contains("/proc/self/fd/"));
+        assert_eq!(p.argv[2], p.source); // $0 = real path
+        assert_eq!(&p.argv[3..], &["A", "B"]);
+        // Source mode serves the bytes verbatim (no $0 rewrite in the buffer).
+        assert_eq!(
+            std::fs::read(p.argv[1].split(' ').nth(1).unwrap().trim_matches('\'')).unwrap(),
+            b"#!/usr/bin/env -S scriptbox dash\necho hi\n"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -258,7 +327,8 @@ mod tests {
             interp_override: vec!["/nonexistent/scriptbox-interp-xyz".into()],
             script: path.clone(),
             script_args: vec![],
-            rewrite_argv0: false,
+            argv0: Some(Argv0::Off),
+            subscripts: None,
         };
         assert!(run(spec).is_err());
         let _ = std::fs::remove_file(&path);

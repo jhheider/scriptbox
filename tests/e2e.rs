@@ -306,3 +306,86 @@ fn frontmatter_interpreter_is_used_when_no_argv_interpreter() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn argv0_source_mode_gives_dash_a_real_dollar_zero() {
+    if !have("dash") {
+        return;
+    }
+    // dash can't set $0 in-run (Rewrite is a no-op); Source mode does it.
+    let path = write_script(
+        "srcmode",
+        "#!/usr/bin/env -S scriptbox dash\necho \"Z=$0\"\n",
+    );
+    let want = std::fs::canonicalize(&path).unwrap();
+    let out = scriptbox()
+        .arg("--argv0=source")
+        .arg("dash")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        stdout(&out).contains(&format!("Z={}", want.display())),
+        "source mode should give dash the real $0; got {:?}",
+        stdout(&out)
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[cfg(not(feature = "subscripts"))]
+#[test]
+fn subscripts_flag_errors_without_the_feature() {
+    if !have("bash") {
+        return;
+    }
+    let path = write_script(
+        "nofeat",
+        "#!/usr/bin/env -S scriptbox bash\nsource ./x.sh\n",
+    );
+    let out = scriptbox()
+        .arg("--subscripts")
+        .arg("bash")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("without the `subscripts` feature"),
+        "expected a build-feature error, got: {}",
+        stderr(&out)
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[cfg(feature = "subscripts")]
+#[test]
+fn subscripts_reports_resolvable_and_dynamic_sites() {
+    if !have("bash") {
+        return;
+    }
+    let path = write_script(
+        "subs",
+        "#!/usr/bin/env -S scriptbox bash\nsource ./lib.sh\n. \"$HOME/u.sh\"\nbash -c 'true'\necho hi\n",
+    );
+    let out = scriptbox()
+        .arg("--subscripts")
+        .arg("bash")
+        .arg(&path)
+        .output()
+        .unwrap();
+    let err = stderr(&out);
+    assert!(
+        err.contains("./lib.sh") && err.contains("resolvable"),
+        "report: {err}"
+    );
+    assert!(
+        err.contains("$HOME/u.sh") && err.contains("dynamic"),
+        "report: {err}"
+    );
+    // `bash -c` is inline: it must NOT be reported as a file child.
+    assert!(
+        !err.contains("[bash"),
+        "bash -c should not be a subscript site: {err}"
+    );
+    let _ = std::fs::remove_file(&path);
+}

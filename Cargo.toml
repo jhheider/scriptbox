@@ -1,6 +1,6 @@
 [package]
 name = "scriptbox"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["Jacob Heider <jhheider@gmail.com>"]
 repository = "https://github.com/jhheider/scriptbox"
@@ -11,12 +11,20 @@ keywords = ["shell", "script", "immutable", "toctou", "checksum"]
 categories = ["command-line-utilities", "filesystem"]
 rust-version = "1.85.0"
 
+[features]
+# Off by default: the shell parser it pulls (brush-parser) is a ~60-crate tree,
+# which the lean core doesn't carry. Build with `--features subscripts` for the
+# subscript analyzer; the `--subscripts` runtime flag errors without it.
+subscripts = ["dep:brush-parser"]
+
 [dependencies]
 # rustix: memfd_create + seals (Linux), open/unlink/fcntl, with a small,
 # mostly-libc-free footprint (linux_raw backend, no libc, on linux aarch64/x86).
 rustix = { version = "1", features = ["fs"] }
 sha2 = "0.10"
 anyhow = "1"
+# Optional: shell parser for `--features subscripts` only (see [features]).
+brush-parser = { version = "0.4", optional = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }

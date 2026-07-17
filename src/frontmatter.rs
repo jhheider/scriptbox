@@ -19,6 +19,9 @@
 pub struct Frontmatter {
     pub interpreter: Option<String>,
     pub checksum: Option<String>,
+    /// Raw switch values; resolved to enums (with error context) at run time.
+    pub argv0: Option<String>,
+    pub subscripts: Option<String>,
 }
 
 /// Parse the first `# /// scriptbox` block found in `bytes`. Returns an
@@ -51,6 +54,8 @@ pub fn parse(bytes: &[u8]) -> Frontmatter {
             match key.trim() {
                 "interpreter" => fm.interpreter = Some(val),
                 "checksum" => fm.checksum = Some(val),
+                "argv0" => fm.argv0 = Some(val),
+                "subscripts" => fm.subscripts = Some(val),
                 _ => {}
             }
         }

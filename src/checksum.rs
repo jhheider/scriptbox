@@ -7,11 +7,15 @@ use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 
 /// The canonical pin of a script: `sha256:<hex>` over the script's bytes *with
-/// its own frontmatter `checksum` line excluded*.
+/// its entire `# /// scriptbox` frontmatter block excluded*.
 ///
-/// Excluding that one line is what makes pinning non-circular - writing the pin
-/// into the file doesn't change the value the pin is computed from - while every
-/// other byte still contributes, so tampering is still caught.
+/// The block is scriptbox's own config - interpreter, checksum, and
+/// frontmatter-flippable switches - so it must not participate in the pin:
+/// otherwise pinning would be circular (the checksum line), and flipping a
+/// switch would spuriously break the pin. Everything else - the shebang and the
+/// whole script body - still contributes, so tampering with what *runs* is
+/// still caught. (Note: an interpreter set only in frontmatter is therefore not
+/// covered by the pin; put it on the shebang line if you need it pinned.)
 pub fn pin_of(bytes: &[u8]) -> String {
     sha256_pin(&digest_input(bytes))
 }
@@ -27,25 +31,28 @@ pub fn sha256_pin(bytes: &[u8]) -> String {
     s
 }
 
-/// Return `bytes` with the in-block frontmatter `checksum = ...` line removed
-/// (line terminator included). Non-UTF-8 input is returned unchanged (a binary
-/// blob has no text frontmatter to strip).
+/// Return `bytes` with the entire `# /// scriptbox` ... `# ///` block removed
+/// (markers and terminators included). Only the first block is stripped.
+/// Non-UTF-8 input is returned unchanged (a binary blob has no text block).
 fn digest_input(bytes: &[u8]) -> Vec<u8> {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return bytes.to_vec();
     };
     let mut out = String::with_capacity(text.len());
     let mut in_block = false;
-    let mut removed = false;
+    let mut done = false; // only strip the first block
     for line in text.split_inclusive('\n') {
         let body = comment_body(line);
-        if body == Some("/// scriptbox") {
+        if in_block {
+            if body == Some("///") {
+                in_block = false;
+                done = true;
+            }
+            continue; // drop every line of the block, markers included
+        }
+        if !done && body == Some("/// scriptbox") {
             in_block = true;
-        } else if in_block && body == Some("///") {
-            in_block = false;
-        } else if in_block && !removed && is_checksum_key(body) {
-            removed = true;
-            continue; // drop this physical line, terminator and all
+            continue; // drop the opening marker
         }
         out.push_str(line);
     }
@@ -57,11 +64,6 @@ fn digest_input(bytes: &[u8]) -> Vec<u8> {
 fn comment_body(line: &str) -> Option<&str> {
     let after = line.trim_start().strip_prefix('#')?;
     Some(after.strip_prefix(' ').unwrap_or(after).trim())
-}
-
-fn is_checksum_key(body: Option<&str>) -> bool {
-    body.and_then(|b| b.split_once('='))
-        .is_some_and(|(k, _)| k.trim() == "checksum")
 }
 
 /// Compare an expected pin against an actual pin, tolerantly: case-insensitive,
@@ -93,14 +95,14 @@ mod tests {
     }
 
     #[test]
-    fn pin_is_invariant_to_the_checksum_line_value() {
-        // The whole point: changing only the stored checksum value must not
-        // change the computed pin (otherwise pinning is circular).
+    fn pin_is_invariant_to_the_whole_frontmatter_block() {
+        // Any change *inside* the block - the checksum value (non-circular
+        // pinning), the interpreter, a switch - must not change the pin.
         let a = b"#!/bin/bash\n# /// scriptbox\n# checksum = \"sha256:aaaa\"\n# ///\necho hi\n";
-        let b = b"#!/bin/bash\n# /// scriptbox\n# checksum = \"sha256:bbbb\"\n# ///\necho hi\n";
+        let b = b"#!/bin/bash\n# /// scriptbox\n# interpreter = \"zsh\"\n# argv0 = \"source\"\n# checksum = \"sha256:bbbb\"\n# ///\necho hi\n";
         assert_eq!(pin_of(a), pin_of(b));
-        // And it equals the pin of the same script with no checksum line at all.
-        let none = b"#!/bin/bash\n# /// scriptbox\n# ///\necho hi\n";
+        // And both equal the pin with no block at all (same shebang + body).
+        let none = b"#!/bin/bash\necho hi\n";
         assert_eq!(pin_of(a), pin_of(none));
     }
 

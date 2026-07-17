@@ -39,8 +39,8 @@ fn basename(p: &str) -> &str {
     p.rsplit('/').next().unwrap_or(p)
 }
 
-/// Single-quote a string for safe inclusion in a POSIX shell assignment.
-fn shell_squote(s: &str) -> String {
+/// Single-quote a string for safe inclusion in a POSIX shell word.
+pub fn shell_squote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
     for c in s.chars() {
@@ -54,20 +54,17 @@ fn shell_squote(s: &str) -> String {
     out
 }
 
-/// Produce the bytes to hand the interpreter.
+/// Produce the bytes to hand the interpreter, applying the `Rewrite` `$0`
+/// mechanism when asked.
 ///
-/// When `rewrite_argv0` is set, the first line is a `#!` shebang (safe to
-/// discard, since it's a comment to the interpreter), and the interpreter
-/// supports an in-run `$0` reset, line 1 is replaced **one-for-one** with the
-/// reset - preserving every subsequent line number exactly. In every other case
-/// the original bytes are returned verbatim.
-pub fn prepare_bytes(
-    original: &[u8],
-    interp: &str,
-    real_path: &str,
-    rewrite_argv0: bool,
-) -> Vec<u8> {
-    if !rewrite_argv0 || !original.starts_with(b"#!") {
+/// When `rewrite` is set, the first line is a `#!` shebang (safe to discard,
+/// since it's a comment to the interpreter), and the interpreter supports an
+/// in-run `$0` reset, line 1 is replaced **one-for-one** with the reset -
+/// preserving every subsequent line number exactly. In every other case the
+/// original bytes are returned verbatim. (The `Source` and `Off` modes both
+/// serve verbatim; `Source` gets `$0` from the dot-source invocation instead.)
+pub fn prepare_bytes(original: &[u8], interp: &str, real_path: &str, rewrite: bool) -> Vec<u8> {
+    if !rewrite || !original.starts_with(b"#!") {
         return original.to_vec();
     }
     let prologue = match argv0_fix(interp) {
