@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "LICENSE*", ".gitignore"]
+  pull_request:
+    paths-ignore: ["**.md", "LICENSE*", ".gitignore"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    uses: jhheider/rust-ci/.github/workflows/ci.yml@v1
+    with:
+      # POSIX-only: no Windows. Linux via the self-hosted arm64 runner (free,
+      # exercises the memfd path); macOS stays hosted because the `/dev/fd`
+      # open-then-unlink path is macOS-specific and must be covered.
+      os: '["self-hosted","macos-latest"]'
+      # fmt/clippy/coverage on the self-hosted runner too.
+      runs-on: self-hosted
+      coverage: true
+    secrets: inherit
