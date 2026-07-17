@@ -131,3 +131,52 @@ fn clear_cloexec(fd: &OwnedFd) -> Result<()> {
     fcntl_setfd(fd, flags.difference(FdFlags::CLOEXEC)).context("fcntl F_SETFD")?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn immutable_serves_the_exact_bytes() {
+        let data = b"#!/bin/bash\necho hello\n";
+        let s = immutable(data).unwrap();
+        // The fd path (still open, since `s` is alive) reads back the bytes.
+        assert!(s.fd_path.starts_with("/dev/fd/") || s.fd_path.starts_with("/proc/self/fd/"));
+        assert_eq!(std::fs::read(&s.fd_path).unwrap(), data);
+    }
+
+    #[test]
+    fn immutable_copy_rejects_writes() {
+        // Sealed memfd (Linux) fails the write; a read-only-reopened + unlinked
+        // temp (macOS) fails the open-for-write. Either way, no write lands.
+        let s = immutable(b"frozen\n").unwrap();
+        let wrote = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&s.fd_path)
+            .and_then(|mut f| f.write_all(b"x"));
+        assert!(wrote.is_err(), "the immutable copy must reject writes");
+        // ...and the original bytes are intact.
+        assert_eq!(std::fs::read(&s.fd_path).unwrap(), b"frozen\n");
+    }
+
+    #[test]
+    fn empty_script_is_handled() {
+        let s = immutable(b"").unwrap();
+        assert_eq!(std::fs::read(&s.fd_path).unwrap(), b"");
+    }
+
+    #[test]
+    fn read_script_reads_a_normal_file() {
+        let p = std::env::temp_dir().join(format!("scriptbox-rd.{}.sh", std::process::id()));
+        std::fs::write(&p, b"#!/bin/sh\ntrue\n").unwrap();
+        assert_eq!(read_script(&p).unwrap(), b"#!/bin/sh\ntrue\n");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn read_script_errors_on_a_missing_file() {
+        let missing = std::env::temp_dir().join("scriptbox-does-not-exist.zzz.sh");
+        assert!(read_script(&missing).is_err());
+    }
+}

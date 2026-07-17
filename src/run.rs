@@ -21,11 +21,25 @@ pub struct RunSpec {
     pub rewrite_argv0: bool,
 }
 
-/// Execute the script. On success this never returns (the process image is
-/// replaced); it only returns `Err` if something fails before/at `exec`.
-pub fn run(spec: RunSpec) -> Result<Infallible> {
+/// Everything needed to launch the interpreter, computed without any
+/// side effects on the process (no `exec`). Splitting this out from [`run`]
+/// keeps the decision logic - checksum gate, interpreter resolution, `$0`
+/// rewrite, immutable-copy creation - testable in-process, since `run` itself
+/// ends in `exec` and can never return on success.
+struct Plan {
+    interp: String,
+    /// `[interp_args..., fd_path, script_args...]`
+    argv: Vec<String>,
+    /// Exported as `$SCRIPTBOX_SOURCE`.
+    source: String,
+    /// The immutable copy, kept alive (and thus its fd open) until `exec`.
+    immutable: loader::ImmutableScript,
+}
+
+/// Read, verify, resolve, freeze - everything up to but not including `exec`.
+fn plan(spec: &RunSpec) -> Result<Plan> {
     let real_path = std::fs::canonicalize(&spec.script).unwrap_or_else(|_| spec.script.clone());
-    let real_str = real_path.to_string_lossy().into_owned();
+    let source = real_path.to_string_lossy().into_owned();
 
     let bytes = loader::read_script(&spec.script)?;
     let fm = frontmatter::parse(&bytes);
@@ -47,23 +61,40 @@ pub fn run(spec: RunSpec) -> Result<Infallible> {
         }
     }
 
-    let (interp, interp_args) = resolve_interpreter(&spec, &fm, &bytes);
+    let (interp, interp_args) = resolve_interpreter(spec, &fm, &bytes);
 
-    let served = interpreter::prepare_bytes(&bytes, &interp, &real_str, spec.rewrite_argv0);
+    let served = interpreter::prepare_bytes(&bytes, &interp, &source, spec.rewrite_argv0);
     let immutable = loader::immutable(&served)?;
 
     // interp [interp_args...] <fd_path> [script_args...]
-    let mut cmd = Command::new(&interp);
-    cmd.args(&interp_args)
-        .arg(&immutable.fd_path)
-        .args(&spec.script_args)
+    let mut argv = interp_args;
+    argv.push(immutable.fd_path.clone());
+    argv.extend(spec.script_args.iter().cloned());
+
+    Ok(Plan {
+        interp,
+        argv,
+        source,
+        immutable,
+    })
+}
+
+/// Execute the script. On success this never returns (the process image is
+/// replaced); it only returns `Err` if something fails before/at `exec`.
+pub fn run(spec: RunSpec) -> Result<Infallible> {
+    let plan = plan(&spec)?;
+    // Keep the immutable copy's fd open across exec.
+    let _keep = &plan.immutable;
+
+    let mut cmd = Command::new(&plan.interp);
+    cmd.args(&plan.argv)
         // Universal escape hatch for self-locating scripts: the real path is
         // always here even though `$0`/`BASH_SOURCE` may show the fd path.
-        .env("SCRIPTBOX_SOURCE", &real_str);
+        .env("SCRIPTBOX_SOURCE", &plan.source);
 
     // Replace this process with the interpreter. Returns only on failure.
     let err = cmd.exec();
-    Err(anyhow::Error::new(err).context(format!("exec interpreter `{interp}`")))
+    Err(anyhow::Error::new(err).context(format!("exec interpreter `{}`", plan.interp)))
 }
 
 /// Interpreter precedence: explicit argv override > frontmatter > the script's
@@ -127,5 +158,109 @@ mod tests {
         let (s, fm) = spec(&[], None);
         assert_eq!(resolve_interpreter(&s, &fm, b"#!/bin/ksh\n").0, "/bin/ksh");
         assert_eq!(resolve_interpreter(&s, &fm, b"echo hi\n").0, "/bin/sh");
+    }
+
+    // --- plan(): exercises the full read/verify/resolve/freeze path in-process,
+    // without exec (which is what makes the run path invisible to coverage). ---
+
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static N: AtomicU32 = AtomicU32::new(0);
+
+    fn tmp(contents: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "scriptbox-plan.{}.{}.sh",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&p, contents).unwrap();
+        p
+    }
+
+    fn run_spec(script: PathBuf, interp: &[&str], rewrite: bool) -> RunSpec {
+        RunSpec {
+            interp_override: interp.iter().map(|s| s.to_string()).collect(),
+            script,
+            script_args: vec!["A".into(), "B".into()],
+            rewrite_argv0: rewrite,
+        }
+    }
+
+    #[test]
+    fn plan_builds_argv_and_freezes_the_bytes() {
+        let path = tmp("#!/bin/bash\necho hi\n");
+        let p = plan(&run_spec(path.clone(), &["bash"], false)).unwrap();
+        assert_eq!(p.interp, "bash");
+        // argv = [fd_path, A, B]  (no interp flags here)
+        assert_eq!(p.argv.len(), 3);
+        assert_eq!(p.argv[1], "A");
+        assert_eq!(p.argv[2], "B");
+        assert!(p.argv[0].starts_with("/dev/fd/") || p.argv[0].starts_with("/proc/self/fd/"));
+        // The fd serves exactly the original bytes (no rewrite requested).
+        let served = std::fs::read(&p.immutable.fd_path).unwrap();
+        assert_eq!(served, b"#!/bin/bash\necho hi\n");
+        // SCRIPTBOX_SOURCE is the canonical real path.
+        assert_eq!(
+            p.source,
+            std::fs::canonicalize(&path).unwrap().to_string_lossy()
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn plan_applies_argv0_rewrite_to_the_served_copy() {
+        let path = tmp("#!/usr/bin/env -S scriptbox bash\necho hi\n");
+        let p = plan(&run_spec(path.clone(), &["bash"], true)).unwrap();
+        let served = String::from_utf8(std::fs::read(&p.immutable.fd_path).unwrap()).unwrap();
+        // Line 1 swapped for the BASH_ARGV0 reset; line 2 preserved.
+        assert!(served.starts_with("BASH_ARGV0="), "got: {served:?}");
+        assert!(served.ends_with("\necho hi\n"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn plan_refuses_on_checksum_mismatch() {
+        let path =
+            tmp("#!/bin/bash\n# /// scriptbox\n# checksum = \"sha256:deadbeef\"\n# ///\necho hi\n");
+        let err = plan(&run_spec(path.clone(), &["bash"], false))
+            .err()
+            .expect("checksum mismatch should be an error");
+        assert!(format!("{err:#}").contains("checksum mismatch"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn plan_runs_when_the_pin_matches() {
+        // Pin the bytes (excluding the checksum line), write it in, then plan.
+        let template =
+            "#!/bin/bash\n# /// scriptbox\n# checksum = \"PLACEHOLDER\"\n# ///\necho hi\n";
+        let pin = checksum::pin_of(template.as_bytes());
+        let path = tmp(&template.replace("PLACEHOLDER", &pin));
+        assert!(plan(&run_spec(path.clone(), &["bash"], false)).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn plan_resolves_interpreter_from_frontmatter_without_argv() {
+        let path = tmp(
+            "#!/usr/bin/env scriptbox\n# /// scriptbox\n# interpreter = \"zsh\"\n# ///\necho hi\n",
+        );
+        let p = plan(&run_spec(path.clone(), &[], false)).unwrap();
+        assert_eq!(p.interp, "zsh");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn run_returns_err_when_the_interpreter_is_missing() {
+        // A guaranteed-missing interpreter: exec fails, so run() returns Err
+        // instead of replacing this test process. Covers the exec-failure tail.
+        let path = tmp("#!/bin/sh\ntrue\n");
+        let spec = RunSpec {
+            interp_override: vec!["/nonexistent/scriptbox-interp-xyz".into()],
+            script: path.clone(),
+            script_args: vec![],
+            rewrite_argv0: false,
+        };
+        assert!(run(spec).is_err());
+        let _ = std::fs::remove_file(&path);
     }
 }

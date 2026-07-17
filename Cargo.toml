@@ -9,11 +9,12 @@ description = "Read a script fully into an immutable copy at invoke, verify an o
 readme = "README.md"
 keywords = ["shell", "script", "immutable", "toctou", "checksum"]
 categories = ["command-line-utilities", "filesystem"]
+rust-version = "1.85.0"
 
 [dependencies]
 # rustix: memfd_create + seals (Linux), open/unlink/fcntl, with a small,
 # mostly-libc-free footprint (linux_raw backend, no libc, on linux aarch64/x86).
-rustix = { version = "1", features = ["fs", "pipe"] }
+rustix = { version = "1", features = ["fs"] }
 sha2 = "0.10"
 anyhow = "1"
 
