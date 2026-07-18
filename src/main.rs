@@ -161,6 +161,11 @@ fn is_program_binary(path: &Path) -> bool {
 }
 
 fn usage() {
+    let subs_note = if subscripts::enabled() {
+        "included in this build"
+    } else {
+        "not in this build - reinstall with `--features subscripts`"
+    };
     eprintln!(
         "scriptbox {VERSION} - run a script from an immutable copy\n\
 \n\
@@ -180,9 +185,8 @@ SWITCHES (also settable in the `# /// scriptbox` block; a flag wins):\n\
                            source   dot-source for a real $0 on every POSIX\n\
                                     shell, at the cost of sourced-mode semantics\n\
                            off      leave $0 as the fd path\n\
-                         (--no-argv0-rewrite is an alias for --argv0 off)\n\
     --subscripts[=MODE]  analyze child invocations (source/. and interpreter\n\
-                         calls). MODE:\n\
+                         calls) [{subs_note}]. MODE:\n\
                            report       detect + list them (default bare flag)\n\
                            wrap         route shell children through scriptbox,\n\
                                         freezing each per-invocation\n\
@@ -190,7 +194,6 @@ SWITCHES (also settable in the `# /// scriptbox` block; a flag wins):\n\
                                         cache: the whole tree frozen once,\n\
                                         consistent even against mid-run edits\n\
                            off\n\
-                         Requires a build with `--features subscripts`.\n\
 \n\
     -V, --version    -h, --help\n\
 \n\

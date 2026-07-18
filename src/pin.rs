@@ -8,6 +8,7 @@ use crate::{checksum, frontmatter, loader};
 /// Print just the canonical `sha256:<hex>` pin of a script.
 pub fn hash(path: &Path) -> Result<()> {
     let bytes = loader::read_script(path)?;
+    warn_frontmatter_interpreter(&bytes);
     println!("{}", checksum::pin_of(&bytes));
     Ok(())
 }
@@ -17,8 +18,22 @@ pub fn hash(path: &Path) -> Result<()> {
 /// this and re-running `pin` yields the same value (no chasing a fixpoint).
 pub fn pin(path: &Path) -> Result<()> {
     let bytes = loader::read_script(path)?;
+    warn_frontmatter_interpreter(&bytes);
     print!("{}", pin_block(&bytes));
     Ok(())
+}
+
+/// The whole `# /// scriptbox` block is excluded from the pin, so an interpreter
+/// set only in frontmatter isn't covered by it - anyone who can edit the file
+/// could swap the interpreter without tripping the checksum. Nudge the author to
+/// pin it via the shebang instead.
+fn warn_frontmatter_interpreter(bytes: &[u8]) {
+    if frontmatter::parse(bytes).interpreter.is_some() {
+        eprintln!(
+            "scriptbox: warning: this script sets `interpreter` in frontmatter, which the pin \
+             does NOT cover. Put it on the shebang (`#!/usr/bin/env -S scriptbox bash`) to pin it."
+        );
+    }
 }
 
 /// The text `pin` prints: a whole `# /// scriptbox` block when the script has no

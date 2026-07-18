@@ -554,3 +554,110 @@ fn source_freeze_insulates_a_streaming_source() {
     let _ = std::fs::remove_file(&lib);
     let _ = std::fs::remove_file(&caller);
 }
+
+#[cfg(feature = "subscripts")]
+#[test]
+fn freeze_tree_survives_parallel_branches() {
+    // Regression: the cache write path was an unlocked check-then-act; two
+    // parallel branches freezing the same shared lib raced and one got EACCES.
+    if !have("bash") {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("scriptbox-conc.{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let w = |name: &str, body: String| {
+        let p = dir.join(name);
+        std::fs::write(&p, body).unwrap();
+        p
+    };
+    w("common.sh", "echo common\n".into());
+    let a = w(
+        "a.sh",
+        format!(
+            "#!/usr/bin/env -S scriptbox bash\nsource {}/common.sh\n",
+            dir.display()
+        ),
+    );
+    let b = w(
+        "b.sh",
+        format!(
+            "#!/usr/bin/env -S scriptbox bash\nsource {}/common.sh\n",
+            dir.display()
+        ),
+    );
+    let root = w(
+        "root.sh",
+        format!(
+            "#!/usr/bin/env -S scriptbox bash\nbash {} & bash {} & wait\n",
+            a.display(),
+            b.display()
+        ),
+    );
+
+    for i in 0..20 {
+        let out = scriptbox()
+            .arg("--subscripts=freeze-tree")
+            .arg("bash")
+            .arg(&root)
+            .env_remove("SCRIPTBOX_CACHE")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "parallel freeze-tree run {i} failed: {}",
+            stderr(&out)
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "subscripts")]
+#[test]
+fn report_only_marks_frozen_when_actually_frozen() {
+    // Regression: a quoted / ambiguous source was reported (frozen) even when no
+    // rewrite happened. Now the report reflects the actual edit.
+    if !have("bash") {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("scriptbox-honest.{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("lib.sh"), "echo lib\n").unwrap();
+    // A quoted, relative, existing source (resolves via the script's dir).
+    let script = dir.join("s.sh");
+    std::fs::write(
+        &script,
+        "#!/usr/bin/env -S scriptbox bash\nsource \"./lib.sh\"\n",
+    )
+    .unwrap();
+
+    let out = scriptbox()
+        .arg("--subscripts=wrap")
+        .arg("bash")
+        .arg(&script)
+        .output()
+        .unwrap();
+    let err = stderr(&out);
+    assert!(
+        err.contains("(frozen)"),
+        "quoted resolvable source should be frozen: {err}"
+    );
+    // And a dynamic one is never labeled frozen.
+    std::fs::write(
+        &script,
+        "#!/usr/bin/env -S scriptbox bash\nsource \"$X/lib.sh\"\n",
+    )
+    .unwrap();
+    let out2 = scriptbox()
+        .arg("--subscripts=wrap")
+        .arg("bash")
+        .arg(&script)
+        .output()
+        .unwrap();
+    assert!(
+        !stderr(&out2).contains("(frozen)"),
+        "dynamic source must not be frozen: {}",
+        stderr(&out2)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

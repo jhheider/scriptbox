@@ -116,15 +116,31 @@ pub fn frozen_bytes(cache_dir: &Path, canonical: &Path, disk_bytes: &[u8]) -> Re
         return Ok(bytes);
     }
 
-    // Miss: pin on copy, write, then lock read-only.
+    // Miss: pin on copy. Write each file to a private temp then atomically
+    // rename into place - so a concurrent freezer (freeze-tree's whole point is a
+    // shared, multi-process cache; parallel `a & b & wait` branches hit this)
+    // never sees a half-written file or races a 0400-locked destination. The
+    // snapshot is renamed LAST, so anyone who sees `.snap` also sees `.pin`.
     let pin = checksum::sha256_pin(disk_bytes);
-    std::fs::write(&pin_file, &pin)
-        .with_context(|| format!("writing cache pin `{}`", pin_file.display()))?;
-    std::fs::write(&snap, disk_bytes)
-        .with_context(|| format!("writing cache snapshot `{}`", snap.display()))?;
-    std::fs::set_permissions(&snap, std::fs::Permissions::from_mode(0o400))
-        .with_context(|| format!("locking snapshot `{}` read-only", snap.display()))?;
+    write_atomic(&pin_file, pin.as_bytes())?;
+    write_atomic(&snap, disk_bytes)?;
     Ok(disk_bytes.to_vec())
+}
+
+/// Write `bytes` to `dest` atomically and read-only (0400): to a unique temp in
+/// the same dir, then `rename` over `dest`. Concurrent writers each rename their
+/// own temp; the last wins and the content is identical, so no reader ever sees
+/// a partial or permission-locked file.
+fn write_atomic(dest: &Path, bytes: &[u8]) -> Result<()> {
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let dir = dest.parent().unwrap_or(Path::new("."));
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!(".tmp.{}.{n}", std::process::id()));
+    std::fs::write(&tmp, bytes).with_context(|| format!("writing temp `{}`", tmp.display()))?;
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o400))
+        .with_context(|| format!("locking temp `{}` read-only", tmp.display()))?;
+    std::fs::rename(&tmp, dest).with_context(|| format!("renaming into `{}`", dest.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]

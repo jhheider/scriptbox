@@ -64,10 +64,13 @@ mod detect {
     use crate::{cache, loader};
     use anyhow::{Context, Result};
     use brush_parser::ast;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::path::{Path, PathBuf};
 
-    #[derive(PartialEq)]
+    /// Cap on recursive `source` freezing depth (fd/stack backstop).
+    const SOURCE_DEPTH_CAP: usize = 64;
+
+    #[derive(PartialEq, Clone, Copy)]
     enum Category {
         Source,     // source / . - freeze the include into an fd, in-process
         ShellChild, // a shell interpreter call or a direct ./x.sh - run under scriptbox
@@ -78,12 +81,19 @@ mod detect {
         label: &'static str,
         category: Category,
         line: usize,
-        /// Byte offset of the command word (where a subprocess wrap prefix goes).
-        cmd_offset: usize,
-        /// Byte span of the first path argument (where a source path is replaced).
-        arg_span: Option<(usize, usize)>,
-        target: String,
+        cmd_offset: usize,                // command-word start (subprocess prefix)
+        arg_span: Option<(usize, usize)>, // path-arg span (source replacement)
+        target: String,                   // dequoted
         resolvable: bool,
+    }
+
+    /// Recursion state threaded through the whole tree of a single invocation.
+    struct Ctx<'a> {
+        mode: Subscripts,
+        cache_dir: Option<&'a Path>,
+        held: Vec<loader::ImmutableScript>,
+        frozen: HashMap<PathBuf, String>, // canonical path -> its frozen fd path (dedup)
+        in_progress: HashSet<PathBuf>,    // canonical paths being frozen now (cycle guard)
     }
 
     const SHELLS: &[&str] = &["bash", "sh", "dash", "zsh", "ksh", "mksh"];
@@ -96,27 +106,27 @@ mod detect {
         script: &Path,
         cache_dir: Option<&Path>,
     ) -> Result<Applied> {
-        let mut held = Vec::new();
-        let mut visited = HashSet::new();
-        if let Ok(c) = std::fs::canonicalize(script) {
-            visited.insert(c);
-        }
-        let out = process(mode, bytes, script, cache_dir, &mut held, &mut visited)?;
-        Ok(Applied { bytes: out, held })
+        let canonical = std::fs::canonicalize(script).unwrap_or_else(|_| script.to_path_buf());
+        let mut ctx = Ctx {
+            mode,
+            cache_dir,
+            held: Vec::new(),
+            frozen: HashMap::new(),
+            in_progress: HashSet::new(),
+        };
+        // The top-level script must not be re-frozen if something sources it back.
+        ctx.in_progress.insert(canonical.clone());
+        let out = process(&mut ctx, bytes, &canonical, 0)?;
+        Ok(Applied {
+            bytes: out,
+            held: ctx.held,
+        })
     }
 
-    /// Recursively rewrite `bytes`: prefix shell subprocess sites with a
-    /// scriptbox invocation, and replace resolvable `source` paths with a frozen
-    /// fd path (recursing into the sourced file first). `visited` breaks source
-    /// cycles.
-    fn process(
-        mode: Subscripts,
-        bytes: &[u8],
-        script: &Path,
-        cache_dir: Option<&Path>,
-        held: &mut Vec<loader::ImmutableScript>,
-        visited: &mut HashSet<PathBuf>,
-    ) -> Result<Vec<u8>> {
+    /// Rewrite `bytes` (the script at canonical `script`): prefix shell
+    /// subprocess sites with a scriptbox invocation, and replace resolvable
+    /// `source` paths with a frozen fd path (recursing into the sourced file).
+    fn process(ctx: &mut Ctx, bytes: &[u8], script: &Path, depth: usize) -> Result<Vec<u8>> {
         let Ok(src) = std::str::from_utf8(bytes) else {
             eprintln!(
                 "scriptbox: subscripts: {} is not UTF-8; skipping",
@@ -135,41 +145,48 @@ mod detect {
             }
         };
 
-        // report only?
-        if mode == Subscripts::Report {
-            print_report(script, &sites, false);
+        if ctx.mode == Subscripts::Report {
+            report_detection(script, &sites);
             return Ok(bytes.to_vec());
         }
 
         let exe = std::env::current_exe().context("finding the scriptbox binary")?;
         let exe = exe.to_string_lossy();
-        let propagate = if mode == Subscripts::FreezeTree {
+        let propagate = if ctx.mode == Subscripts::FreezeTree {
             "freeze-tree"
         } else {
             "wrap"
         };
         let wrap_prefix = format!("{} --subscripts={} ", shell_squote(&exe), propagate);
 
-        // Collect edits (start, end, replacement); apply high offset -> low.
+        // Build edits and the per-site outcome IN LOCKSTEP, so the report never
+        // claims a site was frozen/wrapped when no edit was actually made.
         let mut edits: Vec<(usize, usize, String)> = Vec::new();
+        let mut outcomes: Vec<&'static str> = Vec::with_capacity(sites.len());
         for s in &sites {
-            match s.category {
+            let outcome = match s.category {
                 Category::ShellChild if s.resolvable => {
                     edits.push((s.cmd_offset, s.cmd_offset, wrap_prefix.clone()));
+                    "wrapped"
                 }
                 Category::Source if s.resolvable => {
-                    if let (Some((a, b)), Some(fd_path)) = (
-                        s.arg_span,
-                        freeze_source(mode, &s.target, cache_dir, held, visited)?,
-                    ) {
-                        edits.push((a, b, fd_path));
+                    match freeze_source(ctx, &s.target, script, depth)? {
+                        Some(fd) if s.arg_span.is_some() => {
+                            let (a, b) = s.arg_span.unwrap();
+                            edits.push((a, b, fd));
+                            "frozen"
+                        }
+                        _ => "left - unresolved/ambiguous",
                     }
                 }
-                _ => {}
-            }
+                _ if !s.resolvable => "left - dynamic",
+                Category::OtherChild => "left - immune",
+                _ => "left",
+            };
+            outcomes.push(outcome);
         }
 
-        print_report(script, &sites, true);
+        report_outcomes(script, &sites, &outcomes);
 
         edits.sort_unstable_by_key(|e| std::cmp::Reverse(e.0));
         let mut out = src.to_string();
@@ -181,46 +198,74 @@ mod detect {
         Ok(out.into_bytes())
     }
 
-    /// Freeze a resolvable `source` target into an immutable fd (after recursing
-    /// into it) and return its fd path. `None` if the path can't be resolved to
-    /// an existing file or would form a source cycle.
+    /// Freeze a resolvable `source` target into an immutable fd and return its fd
+    /// path. Reuses an already-frozen file's fd (dedup); returns `None` for an
+    /// unresolved/ambiguous path, a genuine source cycle, or past the depth cap.
     fn freeze_source(
-        mode: Subscripts,
+        ctx: &mut Ctx,
         literal: &str,
-        cache_dir: Option<&Path>,
-        held: &mut Vec<loader::ImmutableScript>,
-        visited: &mut HashSet<PathBuf>,
+        from: &Path,
+        depth: usize,
     ) -> Result<Option<String>> {
-        let Some(canonical) = resolve(literal) else {
-            return Ok(None); // missing/unresolvable: leave the source as-is
+        let Some(canonical) = resolve(literal, from) else {
+            return Ok(None); // missing, or ambiguous between script-dir and CWD
         };
-        if !visited.insert(canonical.clone()) {
-            return Ok(None); // cycle: don't recurse; leave as-is
+        if let Some(fd) = ctx.frozen.get(&canonical) {
+            return Ok(Some(fd.clone())); // already frozen once - reuse the same fd
+        }
+        if ctx.in_progress.contains(&canonical) {
+            return Ok(None); // genuine cycle: leave it, the shell will loop as written
+        }
+        if depth >= SOURCE_DEPTH_CAP {
+            eprintln!(
+                "scriptbox: subscripts: source depth cap ({SOURCE_DEPTH_CAP}) hit at {}; leaving it",
+                canonical.display()
+            );
+            return Ok(None);
         }
 
+        ctx.in_progress.insert(canonical.clone());
         let disk = std::fs::read(&canonical)
             .with_context(|| format!("reading sourced file `{}`", canonical.display()))?;
-        let bytes = match cache_dir {
+        let bytes = match ctx.cache_dir {
             Some(c) => cache::frozen_bytes(c, &canonical, &disk)?,
             None => disk,
         };
-        let processed = process(mode, &bytes, &canonical, cache_dir, held, visited)?;
+        let processed = process(ctx, &bytes, &canonical, depth + 1)?;
         let imm = loader::immutable(&processed)?;
         let fd_path = imm.fd_path.clone();
-        held.push(imm);
+        ctx.held.push(imm);
+        ctx.in_progress.remove(&canonical);
+        ctx.frozen.insert(canonical, fd_path.clone());
         Ok(Some(fd_path))
     }
 
-    /// Resolve a literal `source` argument to an existing canonical path
-    /// (relative to the current directory, matching how the shell resolves it).
-    fn resolve(literal: &str) -> Option<PathBuf> {
+    /// Resolve a literal `source` argument to an existing canonical path. Tries
+    /// both the sourcing script's own directory and the current directory (a
+    /// shell resolves against runtime CWD, which we can't know statically). To
+    /// avoid silently freezing the WRONG file, it only commits when the
+    /// candidates agree on exactly one file; a disagreement returns `None`.
+    fn resolve(literal: &str, from: &Path) -> Option<PathBuf> {
         let p = Path::new(literal);
-        let abs = if p.is_absolute() {
-            p.to_path_buf()
+        if p.is_absolute() {
+            return std::fs::canonicalize(p).ok();
+        }
+        let mut hits: HashSet<PathBuf> = HashSet::new();
+        if let Some(dir) = from.parent() {
+            if let Ok(c) = std::fs::canonicalize(dir.join(p)) {
+                hits.insert(c);
+            }
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            if let Ok(c) = std::fs::canonicalize(cwd.join(p)) {
+                hits.insert(c);
+            }
+        }
+        if hits.len() == 1 {
+            hits.into_iter().next()
         } else {
-            std::env::current_dir().ok()?.join(p)
-        };
-        std::fs::canonicalize(abs).ok()
+            None
+        }
     }
 
     fn parse_sites(src: &str) -> Result<Vec<Site>> {
@@ -255,18 +300,23 @@ mod detect {
             })
             .unwrap_or_default();
 
+        // Dequote a Word's value (brush keeps surrounding quotes in `.value`), so
+        // `source "./lib.sh"` resolves and `"$D/x"` still reads as dynamic.
+        let deq = |w: &ast::Word| brush_parser::unquote_str(&w.value);
         let span_of = |w: &ast::Word| w.loc.as_ref().map(|s| (s.start.index, s.end.index));
 
         if name == "source" || name == "." {
             let t = args.first()?;
+            let target = deq(t);
+            let resolvable = is_literal(&target);
             return Some(Site {
                 label: "source",
                 category: Category::Source,
                 line,
                 cmd_offset,
                 arg_span: span_of(t),
-                target: t.value.clone(),
-                resolvable: is_literal(&t.value),
+                target,
+                resolvable,
             });
         }
 
@@ -275,6 +325,8 @@ mod detect {
                 return None; // inline `-c '...'`, no file child
             }
             let t = args.iter().find(|w| !w.value.starts_with('-'))?;
+            let target = deq(t);
+            let resolvable = is_literal(&target);
             let category = if SHELLS.contains(&base) {
                 Category::ShellChild
             } else {
@@ -286,8 +338,8 @@ mod detect {
                 line,
                 cmd_offset,
                 arg_span: span_of(t),
-                target: t.value.clone(),
-                resolvable: is_literal(&t.value),
+                target,
+                resolvable,
             });
         }
 
@@ -315,6 +367,8 @@ mod detect {
         None
     }
 
+    /// A word is statically resolvable if (after dequoting) it carries no shell
+    /// expansion.
     fn is_literal(w: &str) -> bool {
         !w.contains('$') && !w.contains('`')
     }
@@ -335,36 +389,33 @@ mod detect {
         }
     }
 
-    fn print_report(script: &Path, sites: &[Site], acting: bool) {
+    fn report_detection(script: &Path, sites: &[Site]) {
         if sites.is_empty() {
             return;
         }
-        let verb = if acting { "wrapping" } else { "detection only" };
-        eprintln!("scriptbox: subscripts in {} ({verb}):", script.display());
+        eprintln!(
+            "scriptbox: subscripts in {} (detection only):",
+            script.display()
+        );
         for s in sites {
-            let acted = matches!(
-                (acting, &s.category, s.resolvable),
-                (true, Category::ShellChild, true) | (true, Category::Source, true)
-            );
-            let status = if !acting {
-                if s.resolvable {
-                    "resolvable"
-                } else {
-                    "dynamic"
-                }
-            } else if acted {
-                if s.category == Category::Source {
-                    "frozen"
-                } else {
-                    "wrapped"
-                }
-            } else if !s.resolvable {
-                "dynamic - left"
-            } else if s.category == Category::OtherChild {
-                "immune - left"
+            let status = if s.resolvable {
+                "resolvable"
             } else {
-                "left"
+                "dynamic"
             };
+            eprintln!(
+                "  [{:<6}] line {:<4} {}  ({status})",
+                s.label, s.line, s.target
+            );
+        }
+    }
+
+    fn report_outcomes(script: &Path, sites: &[Site], outcomes: &[&str]) {
+        if sites.is_empty() {
+            return;
+        }
+        eprintln!("scriptbox: subscripts in {} (wrapping):", script.display());
+        for (s, status) in sites.iter().zip(outcomes) {
             eprintln!(
                 "  [{:<6}] line {:<4} {}  ({status})",
                 s.label, s.line, s.target
@@ -421,6 +472,16 @@ mod detect {
                     }
                 }
             }
+            ast::CompoundCommand::CaseClause(c) => {
+                for item in &c.cases {
+                    if let Some(list) = &item.cmd {
+                        walk_list(list, out);
+                    }
+                }
+            }
+            // Arithmetic / coprocess and command-substitution interiors aren't
+            // descended (brush's Word carries only raw text); such sites are
+            // simply not seen.
             _ => {}
         }
     }
@@ -430,22 +491,23 @@ mod detect {
         use super::*;
 
         #[test]
-        fn classify_finds_source_arg_span_and_shell_children() {
-            let src = "#!/bin/bash\nsource ./lib.sh\nbash child.sh\npython x.py\nsource \"$D/y\"\n";
+        fn dequotes_and_classifies() {
+            // Quoted literal source resolves; a variable path stays dynamic; a
+            // source inside `case` is still seen.
+            let src = "#!/bin/bash\n\
+                       source \"./lib.sh\"\n\
+                       source \"$D/y\"\n\
+                       case $1 in a) source ./inner.sh ;; esac\n";
             let sites = parse_sites(src).unwrap();
             let srcs: Vec<_> = sites
                 .iter()
                 .filter(|s| s.category == Category::Source)
                 .collect();
-            assert_eq!(srcs.len(), 2);
-            assert!(srcs[0].resolvable && srcs[0].arg_span.is_some());
-            assert!(!srcs[1].resolvable); // "$D/y" is dynamic
-            assert!(
-                sites
-                    .iter()
-                    .any(|s| s.category == Category::ShellChild && s.resolvable)
-            );
-            assert!(sites.iter().any(|s| s.category == Category::OtherChild)); // python
+            assert_eq!(srcs.len(), 3, "case-branch source must be seen");
+            assert_eq!(srcs[0].target, "./lib.sh"); // dequoted
+            assert!(srcs[0].resolvable);
+            assert!(!srcs[1].resolvable); // "$D/y" -> $D/y -> dynamic
+            assert!(srcs[2].resolvable && srcs[2].target == "./inner.sh");
         }
     }
 }
