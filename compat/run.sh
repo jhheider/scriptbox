@@ -61,6 +61,7 @@ for sh in bash zsh dash ksh; do
     trans trap_exit.sh    "$sh" "" "EXIT trap fires"
     trans set_euo.sh      "$sh" "" "set -eu + pipe"
     trans exec_replace.sh "$sh" "" "exec replaces shell"
+    trans crlf.sh         "$sh" "" "CRLF line endings (byte-faithful freeze)"
     trans large.sh        "$sh" "" "4000-line script (memfd/unlink path)"
 done
 # arrays + process substitution: bash/zsh only
@@ -132,6 +133,14 @@ if "$SB" --subscripts=report bash "$ID/source_parent.sh" >/dev/null 2>&1; then
         pass=$((pass+1)); printf '  %sPASS%s subscripts      report detected the child.sh source site\n' "$GRN" "$RST"
     else
         note=$((note+1)); printf '  %sNOTE%s subscripts      report did not flag child.sh (dynamic path?)\n' "$DIM" "$RST"
+    fi
+    # freeze must wrap an exec'd child while staying transparent to the output
+    ep=$(bash "$ID/exec_parent.sh" 2>/dev/null)
+    eb=$("$SB" --subscripts=freeze bash "$ID/exec_parent.sh" 2>/dev/null)
+    if [ "$ep" = "$eb" ] && printf '%s' "$eb" | grep -q exec-child-ran; then
+        pass=$((pass+1)); printf '  %sPASS%s subscripts      freeze wraps the exec'"'"'d child; output matches plain\n' "$GRN" "$RST"
+    else
+        fail=$((fail+1)); printf '  %sFAIL%s subscripts      freeze exec-child: plain=[%s] boxed=[%s]\n' "$RED" "$RST" "$ep" "$eb"
     fi
 else
     printf '\n%s(--subscripts unavailable: lean build. Build with --features subscripts to test it.)%s\n' "$DIM" "$RST"
