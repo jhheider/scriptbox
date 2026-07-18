@@ -1,3 +1,5 @@
+set fallback
+
 # Development recipes; CI runs the same checks (.github/workflows).
 
 # Run all checks: formatting, linting, tests
