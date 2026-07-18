@@ -99,7 +99,7 @@ for sh in bash zsh dash ksh; do
     fi
 done
 
-hdr "\$0 handling (--argv0) - incl. a finding: the rewrite needs a shebang"
+hdr "\$0 handling (--argv0) across shells"
 for sh in bash zsh dash ksh; do
     has "$sh" || continue
     ns=$("$SB" "$sh" "$ID/argv0.sh" 2>/dev/null)               # no shebang, default mode
@@ -109,11 +109,10 @@ for sh in bash zsh dash ksh; do
     printf '  %sNOTE%s argv0 %-5s no-shebang=[%s]\n              with-shebang=[%s]\n              --argv0 source=[%s]\n' \
         "$DIM" "$RST" "$sh" "$ns" "$ws" "$src"
 done
-printf '       %sFINDING: default $0 rewrite works by swapping the shebang LINE, so a\n' "$DIM"
-printf '       script with NO shebang run via `scriptbox <shell> script` keeps $0 as the\n'
-printf '       fd path. bash>=5/zsh get the real path only WITH a shebang; dash/ksh need\n'
-printf '       --argv0 source (which works with or without a shebang) except on zsh where\n'
-printf '       source mode intentionally keeps the fd path.%s\n' "$RST"
+printf '       %sShebang-less scripts now get the $0 reset PREPENDED (1-line offset), so\n' "$DIM"
+printf '       bash>=5/zsh resolve the real path with OR without a shebang (this fixed\n'
+printf '       issue #1). macOS bash 3.2 has no BASH_ARGV0, so $0 stays the fd path there;\n'
+printf '       dash/ksh need --argv0 source; zsh source-mode intentionally keeps the fd path.%s\n' "$RST"
 
 hdr "source a sibling (self-location via \$SCRIPTBOX_SOURCE)"
 for sh in bash zsh dash ksh; do

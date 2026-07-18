@@ -5,7 +5,8 @@
 //! the real script path. `SCRIPTBOX_SOURCE` (exported unconditionally by the
 //! runner) is the universal escape hatch, but for the common `usage: $0` /
 //! `dirname "$0"` case we can also reset `$0` in-run - where the shell supports
-//! it - by replacing the line-1 shebang with a one-line prologue.
+//! it - by injecting a one-line prologue: swapping the line-1 shebang when the
+//! script has one, else prepending it (a 1-line offset for shebang-less scripts).
 //!
 //! What each shell supports for an *in-run* `$0` reset (probed empirically):
 //! - **bash >= 5**: `BASH_ARGV0='...'` (on bash 3.2 it's a harmless plain var).
@@ -55,16 +56,25 @@ pub fn shell_squote(s: &str) -> String {
 }
 
 /// Produce the bytes to hand the interpreter, applying the `Rewrite` `$0`
-/// mechanism when asked.
+/// mechanism when asked (and the interpreter supports an in-run `$0` reset).
 ///
-/// When `rewrite` is set, the first line is a `#!` shebang (safe to discard,
-/// since it's a comment to the interpreter), and the interpreter supports an
-/// in-run `$0` reset, line 1 is replaced **one-for-one** with the reset -
-/// preserving every subsequent line number exactly. In every other case the
-/// original bytes are returned verbatim. (The `Source` and `Off` modes both
-/// serve verbatim; `Source` gets `$0` from the dot-source invocation instead.)
+/// - **Script has a `#!` shebang** (the usual case, including every
+///   `#!/usr/bin/env -S scriptbox ...` launch): line 1 is replaced
+///   **one-for-one** with the reset. The shebang is a comment to the
+///   interpreter, so discarding it is free, and every subsequent line number is
+///   preserved exactly.
+/// - **Script has no shebang** (only reachable via an explicit
+///   `scriptbox <shell> script`): the reset is **prepended** as a new line 1.
+///   This shifts subsequent line numbers by one - the small, documented price of
+///   fixing `$0` on a shebang-less script, rather than silently leaving `$0` as
+///   the fd path.
+///
+/// In every other case the original bytes are returned verbatim. (`Source` and
+/// `Off` serve verbatim; `Source` gets `$0` from the dot-source invocation.)
+/// This is independent of the checksum gate, which runs over the pre-rewrite
+/// bytes, so a pin verifies the file on disk whether or not a shebang is present.
 pub fn prepare_bytes(original: &[u8], interp: &str, real_path: &str, rewrite: bool) -> Vec<u8> {
-    if !rewrite || !original.starts_with(b"#!") {
+    if !rewrite {
         return original.to_vec();
     }
     let prologue = match argv0_fix(interp) {
@@ -73,10 +83,16 @@ pub fn prepare_bytes(original: &[u8], interp: &str, real_path: &str, rewrite: bo
         Argv0Fix::None => return original.to_vec(),
     };
     let mut out = prologue.into_bytes();
-    // Keep the first newline and everything after it byte-for-byte, so line
-    // numbers past line 1 are unchanged.
-    if let Some(nl) = original.iter().position(|&b| b == b'\n') {
-        out.extend_from_slice(&original[nl..]);
+    if original.starts_with(b"#!") {
+        // Swap the shebang line: keep the first newline and everything after it
+        // byte-for-byte, so line numbers past line 1 are unchanged.
+        if let Some(nl) = original.iter().position(|&b| b == b'\n') {
+            out.extend_from_slice(&original[nl..]);
+        }
+    } else {
+        // No shebang to swap: prepend the reset as a new line 1 (a 1-line offset).
+        out.push(b'\n');
+        out.extend_from_slice(original);
     }
     out
 }
@@ -114,10 +130,27 @@ mod tests {
     }
 
     #[test]
-    fn non_shebang_first_line_is_never_rewritten() {
-        // Would otherwise delete a real line of code.
-        let src = b"echo first\n";
-        assert_eq!(prepare_bytes(src, "bash", "/real.sh", true), src);
+    fn no_shebang_prepends_the_reset_and_keeps_the_code() {
+        // No shebang line to swap, so the reset is prepended (a 1-line offset)
+        // and every original line is preserved below it - never deleted.
+        let out = prepare_bytes(b"echo first\nfalse\n", "bash", "/real.sh", true);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "BASH_ARGV0='/real.sh'\necho first\nfalse\n"
+        );
+    }
+
+    #[test]
+    fn no_shebang_zsh_prepends_zero_assignment() {
+        let out = prepare_bytes(b"print $0\n", "zsh", "/a b.sh", true);
+        assert_eq!(String::from_utf8(out).unwrap(), "0='/a b.sh'\nprint $0\n");
+    }
+
+    #[test]
+    fn no_shebang_dash_has_no_fix_so_verbatim() {
+        // dash has no in-run $0 reset, so a shebang-less dash script is untouched.
+        let src = b"echo hi\n";
+        assert_eq!(prepare_bytes(src, "dash", "/real.sh", true), src);
     }
 
     #[test]
