@@ -209,6 +209,25 @@ pub fn run(spec: RunSpec) -> Result<Infallible> {
     Err(anyhow::Error::new(err).context(format!("exec interpreter `{}`", plan.interp)))
 }
 
+/// Compute the exact bytes scriptbox would hand the interpreter after the `$0`
+/// rewrite - without freezing, exec'ing, or any side effect. Backs `scriptbox
+/// emit`: useful for seeing what actually runs, and a target for `shellcheck`
+/// (the served copy should add no linter findings the original wouldn't).
+pub fn emit(spec: &RunSpec) -> Result<Vec<u8>> {
+    let real_path = std::fs::canonicalize(&spec.script).unwrap_or_else(|_| spec.script.clone());
+    let source = real_path.to_string_lossy().into_owned();
+    let bytes = loader::read_script(&spec.script)?;
+    let fm = frontmatter::parse(&bytes);
+    let argv0 = resolve_argv0(spec, &fm)?;
+    let (interp, _args) = resolve_interpreter(spec, &fm, &bytes);
+    Ok(interpreter::prepare_bytes(
+        &bytes,
+        &interp,
+        &source,
+        argv0 == Argv0::Rewrite,
+    ))
+}
+
 /// Interpreter precedence: explicit argv override > frontmatter > the script's
 /// own shebang > `/bin/sh`.
 fn resolve_interpreter(
@@ -325,9 +344,13 @@ mod tests {
         let path = tmp("#!/usr/bin/env -S scriptbox bash\necho hi\n");
         let p = plan(&run_spec(path.clone(), &["bash"], Argv0::Rewrite)).unwrap();
         let served = String::from_utf8(std::fs::read(&p.immutable.fd_path).unwrap()).unwrap();
-        // Line 1 swapped for the BASH_ARGV0 reset; line 2 preserved.
-        assert!(served.starts_with("BASH_ARGV0="), "got: {served:?}");
-        assert!(served.ends_with("\necho hi\n"));
+        // Shebang kept on line 1 (lint-clean); BASH_ARGV0 reset joined onto the
+        // first body line with `;`, so line numbers are preserved.
+        assert!(
+            served.starts_with("#!/usr/bin/env -S scriptbox bash\nBASH_ARGV0="),
+            "got: {served:?}"
+        );
+        assert!(served.ends_with("; echo hi\n"), "got: {served:?}");
         let _ = std::fs::remove_file(&path);
     }
 

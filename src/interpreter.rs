@@ -5,8 +5,14 @@
 //! the real script path. `SCRIPTBOX_SOURCE` (exported unconditionally by the
 //! runner) is the universal escape hatch, but for the common `usage: $0` /
 //! `dirname "$0"` case we can also reset `$0` in-run - where the shell supports
-//! it - by injecting a one-line prologue: swapping the line-1 shebang when the
-//! script has one, else prepending it (a 1-line offset for shebang-less scripts).
+//! it - by prepending a `$0` reset to the first body line, joined with `;`.
+//!
+//! Prepending onto the first body line (rather than swapping the shebang, or
+//! inserting a new line) buys two things at once: no line is added, so every
+//! original line number is preserved exactly, and the shebang (if any) stays on
+//! line 1, so the served copy stays lint-clean (same shell dialect, no
+//! "missing shebang"). The mashed-together first line is never seen by a human -
+//! it's the internal frozen copy - so that's a zero-cost trick.
 //!
 //! What each shell supports for an *in-run* `$0` reset (probed empirically):
 //! - **bash >= 5**: `BASH_ARGV0='...'` (on bash 3.2 it's a harmless plain var).
@@ -58,21 +64,19 @@ pub fn shell_squote(s: &str) -> String {
 /// Produce the bytes to hand the interpreter, applying the `Rewrite` `$0`
 /// mechanism when asked (and the interpreter supports an in-run `$0` reset).
 ///
-/// - **Script has a `#!` shebang** (the usual case, including every
-///   `#!/usr/bin/env -S scriptbox ...` launch): line 1 is replaced
-///   **one-for-one** with the reset. The shebang is a comment to the
-///   interpreter, so discarding it is free, and every subsequent line number is
-///   preserved exactly.
-/// - **Script has no shebang** (only reachable via an explicit
-///   `scriptbox <shell> script`): the reset is **prepended** as a new line 1.
-///   This shifts subsequent line numbers by one - the small, documented price of
-///   fixing `$0` on a shebang-less script, rather than silently leaving `$0` as
-///   the fd path.
+/// The `$0` reset is **prepended to the first body line, joined with `;`** - after
+/// the shebang line if there is one, else at the very start. This adds no line, so
+/// every original line number is preserved exactly (error messages stay accurate),
+/// and the shebang stays on line 1, so the served copy is lint-clean - scriptbox
+/// adds no findings a linter wouldn't already report on the original.
 ///
-/// In every other case the original bytes are returned verbatim. (`Source` and
-/// `Off` serve verbatim; `Source` gets `$0` from the dot-source invocation.)
-/// This is independent of the checksum gate, which runs over the pre-rewrite
-/// bytes, so a pin verifies the file on disk whether or not a shebang is present.
+/// The one exception is a shebang with no body (nothing after it): there's no line
+/// to join onto, so the reset is appended on its own line (harmless - no body to
+/// misnumber). In every non-rewrite case the original bytes are returned verbatim
+/// (`Source`/`Off` serve verbatim; `Source` gets `$0` from the dot-source call).
+///
+/// Independent of the checksum gate, which runs over the pre-rewrite bytes, so a
+/// pin verifies the file on disk whether or not a shebang is present.
 pub fn prepare_bytes(original: &[u8], interp: &str, real_path: &str, rewrite: bool) -> Vec<u8> {
     if !rewrite {
         return original.to_vec();
@@ -82,18 +86,30 @@ pub fn prepare_bytes(original: &[u8], interp: &str, real_path: &str, rewrite: bo
         Argv0Fix::ZshZero => format!("0={}", shell_squote(real_path)),
         Argv0Fix::None => return original.to_vec(),
     };
-    let mut out = prologue.into_bytes();
-    if original.starts_with(b"#!") {
-        // Swap the shebang line: keep the first newline and everything after it
-        // byte-for-byte, so line numbers past line 1 are unchanged.
-        if let Some(nl) = original.iter().position(|&b| b == b'\n') {
-            out.extend_from_slice(&original[nl..]);
+
+    // Where the body starts: after the shebang's newline, else the very start.
+    let split = if original.starts_with(b"#!") {
+        match original.iter().position(|&b| b == b'\n') {
+            Some(nl) => nl + 1,
+            // A shebang with no newline at all: no body to join onto. Append the
+            // reset on its own line (there are no body lines to misnumber).
+            None => {
+                let mut out = original.to_vec();
+                out.push(b'\n');
+                out.extend_from_slice(prologue.as_bytes());
+                out.push(b'\n');
+                return out;
+            }
         }
     } else {
-        // No shebang to swap: prepend the reset as a new line 1 (a 1-line offset).
-        out.push(b'\n');
-        out.extend_from_slice(original);
-    }
+        0
+    };
+
+    // Prepend the reset to the first body line with `; ` - no new line.
+    let mut out = original[..split].to_vec();
+    out.extend_from_slice(prologue.as_bytes());
+    out.extend_from_slice(b"; ");
+    out.extend_from_slice(&original[split..]);
     out
 }
 
@@ -108,19 +124,24 @@ mod tests {
     }
 
     #[test]
-    fn bash_rewrite_swaps_line_one_and_preserves_the_rest() {
+    fn bash_rewrite_joins_onto_the_first_body_line() {
         let src = b"#!/usr/bin/env -S scriptbox bash\necho hi\nfalse\n";
         let out = prepare_bytes(src, "bash", "/home/j/deploy.sh", true);
-        let text = String::from_utf8(out).unwrap();
-        assert_eq!(text, "BASH_ARGV0='/home/j/deploy.sh'\necho hi\nfalse\n");
-        // Line count is unchanged (line-number fidelity).
-        assert_eq!(text.lines().count(), 3);
+        // Shebang on line 1 (lint-clean); reset joined onto the first body line
+        // with `;`, so `echo hi` and `false` keep their original line numbers.
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "#!/usr/bin/env -S scriptbox bash\nBASH_ARGV0='/home/j/deploy.sh'; echo hi\nfalse\n"
+        );
     }
 
     #[test]
     fn zsh_uses_bare_zero_assignment() {
         let out = prepare_bytes(b"#!/bin/zsh\necho\n", "/bin/zsh", "/a b.sh", true);
-        assert_eq!(String::from_utf8(out).unwrap(), "0='/a b.sh'\necho\n");
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "#!/bin/zsh\n0='/a b.sh'; echo\n"
+        );
     }
 
     #[test]
@@ -130,27 +151,20 @@ mod tests {
     }
 
     #[test]
-    fn no_shebang_prepends_the_reset_and_keeps_the_code() {
-        // No shebang line to swap, so the reset is prepended (a 1-line offset)
-        // and every original line is preserved below it - never deleted.
+    fn no_shebang_joins_onto_line_one() {
+        // No shebang line, so the reset joins onto the original line 1 - no line
+        // added, line numbers preserved, code never deleted.
         let out = prepare_bytes(b"echo first\nfalse\n", "bash", "/real.sh", true);
         assert_eq!(
             String::from_utf8(out).unwrap(),
-            "BASH_ARGV0='/real.sh'\necho first\nfalse\n"
+            "BASH_ARGV0='/real.sh'; echo first\nfalse\n"
         );
     }
 
     #[test]
-    fn no_shebang_zsh_prepends_zero_assignment() {
+    fn no_shebang_zsh_joins_onto_line_one() {
         let out = prepare_bytes(b"print $0\n", "zsh", "/a b.sh", true);
-        assert_eq!(String::from_utf8(out).unwrap(), "0='/a b.sh'\nprint $0\n");
-    }
-
-    #[test]
-    fn no_shebang_dash_has_no_fix_so_verbatim() {
-        // dash has no in-run $0 reset, so a shebang-less dash script is untouched.
-        let src = b"echo hi\n";
-        assert_eq!(prepare_bytes(src, "dash", "/real.sh", true), src);
+        assert_eq!(String::from_utf8(out).unwrap(), "0='/a b.sh'; print $0\n");
     }
 
     #[test]
@@ -158,7 +172,16 @@ mod tests {
         let out = prepare_bytes(b"#!/bin/bash\n:\n", "bash", "/o'brien/x.sh", true);
         assert_eq!(
             String::from_utf8(out).unwrap(),
-            "BASH_ARGV0='/o'\\''brien/x.sh'\n:\n"
+            "#!/bin/bash\nBASH_ARGV0='/o'\\''brien/x.sh'; :\n"
+        );
+    }
+
+    #[test]
+    fn shebang_with_no_body_appends_the_reset() {
+        let out = prepare_bytes(b"#!/bin/bash", "bash", "/x.sh", true);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "#!/bin/bash\nBASH_ARGV0='/x.sh'\n"
         );
     }
 }

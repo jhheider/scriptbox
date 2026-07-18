@@ -23,6 +23,9 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// What an argument vector resolves to.
 enum Action {
     Run(run::RunSpec),
+    /// Print the exact bytes scriptbox would hand the interpreter (the `$0`
+    /// rewrite applied), without running - for debugging / `shellcheck`.
+    Emit(run::RunSpec),
     Hash(PathBuf),
     Pin(PathBuf),
     Gc,
@@ -45,6 +48,10 @@ fn real_main() -> Result<()> {
         Action::Hash(p) => pin::hash(&p)?,
         Action::Pin(p) => pin::pin(&p)?,
         Action::Gc => cache::gc()?,
+        Action::Emit(spec) => {
+            use std::io::Write;
+            std::io::stdout().write_all(&run::emit(&spec)?)?;
+        }
         // On success `run` never returns (it execs); it only returns `Err`.
         Action::Run(spec) => match run::run(spec)? {},
     }
@@ -63,6 +70,10 @@ fn parse(args: &[String]) -> Result<Action> {
         Some("hash") => Ok(Action::Hash(script_arg(args, "hash")?)),
         Some("pin") => Ok(Action::Pin(script_arg(args, "pin")?)),
         Some("gc") => Ok(Action::Gc),
+        Some("emit") => match parse_run(&args[1..])? {
+            Action::Run(spec) => Ok(Action::Emit(spec)),
+            other => Ok(other),
+        },
         _ => parse_run(args),
     }
 }
@@ -174,6 +185,7 @@ USAGE:\n\
     scriptbox pin  <SCRIPT>     print a pin-able `# /// scriptbox` block\n\
     scriptbox hash <SCRIPT>     print the script's sha256 pin\n\
     scriptbox gc                remove freeze-tree snapshot caches from $TMPDIR\n\
+    scriptbox emit [INTERP] <SCRIPT>   print the bytes it would run, without running\n\
 \n\
 SHEBANG:\n\
     #!/usr/bin/env -S scriptbox bash      interpreter on the shebang line\n\

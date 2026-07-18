@@ -37,7 +37,13 @@ found.
   be frozen under scriptbox (the tampered line must not run), while a plain shell
   is vulnerable. Checked on all four shells.
 - **`$0` handling (`--argv0`)** - reports what `$0` resolves to per shell in
-  default vs `source` mode, with and without a shebang (see the finding below).
+  default vs `source` mode, with and without a shebang (see the note below).
+- **No added linter findings** - for each idiom, `shellcheck` the original vs the
+  bytes scriptbox actually serves (`scriptbox emit <shell> x.sh`), and assert the
+  served copy introduces **no shellcheck code the original didn't already have**.
+  It's fine for a script to have findings; scriptbox just must not add any. This
+  is why the `$0` reset is joined onto the first body line rather than replacing
+  the shebang (which would drop the shell dialect and add SC2148).
 - **`--subscripts`** (full-featured build only) - confirms `report` detects a
   `source`d sibling; freezing is exercised by the transparency run.
 - **Real public installers** - `rustup`, `nvm`, `docker`, fetched fresh, run
@@ -55,19 +61,21 @@ found.
 | `source`ing a sibling by path | none (uses `$SCRIPTBOX_SOURCE`) | the fd path can't be `dirname`'d; `$SCRIPTBOX_SOURCE` is the real path |
 | freezing a `source`d child | `--subscripts=freeze` | otherwise the child is a live re-read, one level down |
 
-## Fixed: `$0` rewrite handles shebang-less scripts (was issue #1)
+## Fixed: `$0` rewrite is line-faithful and lint-clean (was issue #1)
 
-The suite originally caught this: the `--argv0 rewrite` used to only **swap the
-script's shebang line** for the injected `$0` prologue, so a script with **no
-shebang**, run via an explicit `scriptbox <shell> script`, silently kept the fd
-path for `$0` even on `bash`>=5 / `zsh`.
+The suite caught this: the `--argv0 rewrite` used to **swap the shebang line** for
+the injected `$0` reset. That dropped the shebang (so `shellcheck` lost the shell
+dialect and added SC2148), and a shebang-less script got no rewrite at all - `$0`
+stayed the fd path even on `bash`>=5 / `zsh`.
 
-Now fixed (`src/interpreter.rs`): when there is no shebang to swap, the prologue is
-**prepended** as a new line 1 - a 1-line offset in error line numbers, the small
-price of getting `$0` right. bash>=5 / zsh resolve the real path with or without a
-shebang; macOS bash 3.2 has no `BASH_ARGV0` so `$0` stays the fd path there;
-dash/ksh still need `--argv0 source`. The checksum gate is unaffected - it runs
-over the pre-rewrite bytes, so a pin verifies the file on disk shebang or not.
+Now (`src/interpreter.rs`) the `$0` reset is **joined onto the first body line with
+`;`** - after the shebang if there is one, else at the start. This adds no line, so
+error line numbers stay exact, and the shebang stays on line 1, so the served copy
+is lint-clean (the shellcheck check above proves it adds no findings). bash>=5 /
+zsh resolve the real path with or without a shebang; macOS bash 3.2 has no
+`BASH_ARGV0`; dash/ksh still need `--argv0 source`. The checksum gate is unaffected
+- it runs over the pre-rewrite bytes, so a pin verifies the file on disk shebang or
+not. Inspect the served bytes for any script with `scriptbox emit <shell> x.sh`.
 
 ## The macOS gap
 
