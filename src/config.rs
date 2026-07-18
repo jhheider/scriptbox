@@ -52,8 +52,8 @@ pub enum Subscripts {
     /// launch-scoped, read-only (0400), pin-on-copy snapshot cache keyed by
     /// canonical path, so every invocation of a script in one tree run sees the
     /// same bytes even against a mid-run edit. Dynamic paths and already-immune
-    /// interpreters (python/ruby/node) are reported but left alone. The cache is
-    /// reaped automatically on a later launch (or `scriptbox gc`).
+    /// interpreters (python/ruby/node) are reported but left alone. Clear stale
+    /// caches with `scriptbox gc`.
     Freeze,
 }
 

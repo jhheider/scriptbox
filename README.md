@@ -100,7 +100,7 @@ Behaviour toggles are settable two ways with the same names - a CLI flag or a
 | Switch | Flag | Frontmatter | Modes (default first) |
 |--------|------|-------------|------------------------|
 | `$0` handling | `--argv0 <mode>` | `argv0 = "<mode>"` | `rewrite`, `source`, `off` |
-| subscript analysis | `--subscripts` | `subscripts = "report"` | `off`, `report` |
+| child protection | `--subscripts` | `subscripts = "freeze"` | `off`, `report`, `freeze` (bare flag = `freeze`) |
 
 ```sh
 #!/usr/bin/env scriptbox
@@ -182,7 +182,7 @@ SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 
 `SCRIPTBOX_SOURCE` names the script scriptbox launched, but it's an environment
 variable, so a child process *inherits* it - an un-wrapped child that reads it
-sees its parent's path, not its own. `--subscripts=wrap` fixes this for the tree
+sees its parent's path, not its own. `--subscripts` fixes this for the tree
 (each wrapped child re-sets it); for an un-wrapped child, prefer `${BASH_SOURCE[0]}`
 there.
 
@@ -196,8 +196,8 @@ one level down. `--subscripts` extends immutability to a script's children:
   an inherited immutable fd (`source /dev/fd/N`) - so a streaming source (zsh's
   streams) can't change out from under the caller either. The tree runs from one
   launch-scoped, read-only, pin-on-copy snapshot cache, so a script edited
-  *between* invocations in the run can't leak in; the cache is reaped
-  automatically on a later launch. A depth counter caps runaway recursion.
+  *between* invocations in the run can't leak in. A depth counter caps runaway
+  recursion. Clear stale caches with `scriptbox gc`.
 - **`report`** - just detect and list the child sites; change nothing.
 
 ```sh

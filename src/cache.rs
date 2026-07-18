@@ -24,9 +24,12 @@ fn base_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
-/// Remove all `freeze` snapshot cache directories from `$TMPDIR`. Stale caches
-/// are already reaped automatically on the next launch (see `reap_stale`); this
-/// is the manual force-all (`scriptbox gc`) for a clean sweep.
+/// Remove all `freeze` snapshot cache directories from `$TMPDIR`. Since the root
+/// `exec`s away, a tree can't clean up after itself, and reaping automatically
+/// on a later launch is unsafe (a detached background job can outlive the root
+/// pid, so "root gone" doesn't mean "tree done"). So cleanup is this explicit
+/// command, run when no scriptbox trees are active (`$TMPDIR` is also reaped by
+/// the OS on reboot). The caches are small.
 pub fn gc() -> Result<()> {
     let base = base_dir();
     let mut removed = 0usize;
@@ -70,8 +73,6 @@ pub fn get_or_create() -> Result<PathBuf> {
         return Ok(PathBuf::from(d));
     }
     let base = base_dir();
-    // A new tree root: opportunistically reap caches from trees that have exited.
-    reap_stale(&base);
     let pid = std::process::id();
     for n in 0..128u32 {
         let dir = base.join(format!("{PREFIX}{pid}.{n}"));
@@ -89,54 +90,6 @@ pub fn get_or_create() -> Result<PathBuf> {
         "could not create a snapshot cache dir under {}",
         base.display()
     )
-}
-
-/// Reap snapshot caches whose owning root process has exited. A tree's root
-/// `exec`s into the interpreter, so the root pid stays alive for the whole run;
-/// once that pid is gone the tree is done and its cache is abandoned. A short
-/// grace period guards against a backgrounded grandchild briefly outliving the
-/// root. This runs when a *new* root cache is created, so caches never pile up
-/// across runs even though the root can't clean up after itself.
-fn reap_stale(base: &Path) {
-    let Ok(entries) = std::fs::read_dir(base) else {
-        return;
-    };
-    let grace = std::time::Duration::from_secs(30);
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        let Some(rest) = name.strip_prefix(PREFIX) else {
-            continue;
-        };
-        let Some(Ok(pid)) = rest.split('.').next().map(str::parse::<u32>) else {
-            continue;
-        };
-        if pid_alive(pid) {
-            continue; // tree still running (exec preserves the root pid)
-        }
-        if let Ok(age) = entry.metadata().and_then(|m| m.modified()).and_then(|t| {
-            std::time::SystemTime::now()
-                .duration_since(t)
-                .map_err(std::io::Error::other)
-        }) && age < grace
-        {
-            continue; // just-abandoned: give a possible orphan a moment
-        }
-        let _ = std::fs::remove_dir_all(entry.path());
-    }
-}
-
-/// Whether a process id is currently live (owned by us, or existing but
-/// un-signalable). Only a definite "no such process" counts as dead.
-fn pid_alive(pid: u32) -> bool {
-    use rustix::process::{Pid, test_kill_process};
-    let Ok(pid) = i32::try_from(pid) else {
-        return true;
-    };
-    match Pid::from_raw(pid) {
-        Some(p) => !matches!(test_kill_process(p), Err(rustix::io::Errno::SRCH)),
-        None => false,
-    }
 }
 
 /// Return the frozen bytes for `canonical` (a canonicalized script path), keyed
