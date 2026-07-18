@@ -23,9 +23,10 @@ FROM rust:1-slim-bookworm
 #   dash - Debian's /bin/sh, but the `dash` *binary* needs the package; no in-run
 #          `$0` rewrite mechanism, so it needs `--argv0 source`
 #   ksh  - ksh93; like dash, needs `--argv0 source` for a real `$0`
-# curl is for the read-only pass over real public installer scripts.
+# curl is for the read-only pass over real public installers; shellcheck for the
+# "scriptbox adds no linter findings" check (original vs `scriptbox emit`).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        bash zsh dash ksh curl ca-certificates \
+        bash zsh dash ksh curl ca-certificates shellcheck \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /scriptbox

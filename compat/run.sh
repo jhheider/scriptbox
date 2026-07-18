@@ -33,6 +33,9 @@ has() { command -v "$1" >/dev/null 2>&1 && "$1" -c 'exit 0' >/dev/null 2>&1; }
 
 hdr() { printf '\n%s== %s ==%s\n' "$YEL" "$1" "$RST"; }
 
+# Space-separated, sorted, unique shellcheck codes from stdin.
+codes() { grep -oE 'SC[0-9]+' | sort -u | tr '\n' ' '; }
+
 # transparency: plain <shell> vs boxed, same stdout+exit expected.
 # args: idiom-file  shell  extra-scriptbox-flags  annotation
 trans() {
@@ -109,10 +112,39 @@ for sh in bash zsh dash ksh; do
     printf '  %sNOTE%s argv0 %-5s no-shebang=[%s]\n              with-shebang=[%s]\n              --argv0 source=[%s]\n' \
         "$DIM" "$RST" "$sh" "$ns" "$ws" "$src"
 done
-printf '       %sShebang-less scripts now get the $0 reset PREPENDED (1-line offset), so\n' "$DIM"
-printf '       bash>=5/zsh resolve the real path with OR without a shebang (this fixed\n'
-printf '       issue #1). macOS bash 3.2 has no BASH_ARGV0, so $0 stays the fd path there;\n'
-printf '       dash/ksh need --argv0 source; zsh source-mode intentionally keeps the fd path.%s\n' "$RST"
+printf '       %sThe $0 reset is joined onto the first body line with `;` (issue #1 fix):\n' "$DIM"
+printf '       no line is added, so error line numbers stay exact, and the shebang stays\n'
+printf '       on line 1, so the served copy is lint-clean. bash>=5/zsh resolve the real\n'
+printf '       path with or without a shebang; macOS bash 3.2 has no BASH_ARGV0; dash/ksh\n'
+printf '       need --argv0 source; zsh source-mode intentionally keeps the fd path.%s\n' "$RST"
+
+if command -v shellcheck >/dev/null 2>&1; then
+    hdr "shellcheck: the served copy (\`scriptbox emit\`) adds no findings the original lacks"
+    for name in cmdsub subshell background heredoc trap_exit set_euo exec_replace \
+                arrays procsub source_parent argv0 argv0_shebang crlf; do
+        f="$ID/$name.sh"
+        [ -f "$f" ] || continue
+        # Only bash/zsh get the $0 rewrite; dash/ksh emit verbatim (nothing to add).
+        for sh in bash zsh; do
+            has "$sh" || continue
+            o=$(shellcheck -s "$sh" -f gcc "$f" 2>/dev/null | codes)
+            e=$("$SB" emit "$sh" "$f" 2>/dev/null | shellcheck -s "$sh" -f gcc - 2>/dev/null | codes)
+            added=""
+            for c in $e; do case " $o " in *" $c "*) ;; *) added="$added$c ";; esac; done
+            if [ -z "$added" ]; then
+                pass=$((pass+1))
+                printf '  %sPASS%s emit+shellcheck %-14s %-5s %sno added findings (orig: %s)%s\n' \
+                    "$GRN" "$RST" "$name" "$sh" "$DIM" "${o:-none}" "$RST"
+            else
+                fail=$((fail+1))
+                printf '  %sFAIL%s emit+shellcheck %-14s %-5s scriptbox ADDED: %s\n' \
+                    "$RED" "$RST" "$name" "$sh" "$added"
+            fi
+        done
+    done
+else
+    printf '\n%s(shellcheck absent - skipped the no-added-findings check)%s\n' "$DIM" "$RST"
+fi
 
 hdr "source a sibling (self-location via \$SCRIPTBOX_SOURCE)"
 for sh in bash zsh dash ksh; do
