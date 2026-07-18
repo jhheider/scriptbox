@@ -56,6 +56,25 @@ pub fn apply(
     }
 }
 
+/// A child-script site of a script, for `emit --subscripts` tree inspection.
+/// Only exists on a build with the shell parser (the `subscripts` feature).
+#[cfg(feature = "subscripts")]
+pub enum Child {
+    /// A resolvable child script path (a `source` include or a shell child).
+    Resolved(std::path::PathBuf),
+    /// A site we can't statically follow (a dynamic path) or won't (an immune
+    /// interpreter), with a human description for the dump.
+    Note(String),
+}
+
+/// Enumerate the child-script sites of `bytes` (the script at `script`):
+/// resolvable `source` includes and shell children as paths, dynamic/immune ones
+/// as notes. Static and read-only; the order matches the sites' order in the file.
+#[cfg(feature = "subscripts")]
+pub fn child_scripts(bytes: &[u8], script: &Path) -> Vec<Child> {
+    detect::child_scripts(bytes, script)
+}
+
 #[cfg(feature = "subscripts")]
 mod detect {
     use super::Applied;
@@ -262,6 +281,42 @@ mod detect {
         } else {
             None
         }
+    }
+
+    /// Static child-site enumeration for `emit --subscripts` (see the module-level
+    /// wrapper). Resolvable `source`/shell-child paths become `Resolved`; dynamic
+    /// or immune sites become a descriptive `Note`.
+    pub fn child_scripts(bytes: &[u8], script: &Path) -> Vec<super::Child> {
+        use super::Child;
+        let Ok(src) = std::str::from_utf8(bytes) else {
+            return Vec::new();
+        };
+        let Ok(sites) = parse_sites(src) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for s in &sites {
+            let resolved = if s.resolvable && s.category != Category::OtherChild {
+                resolve(&s.target, script)
+            } else {
+                None
+            };
+            match resolved {
+                Some(p) => out.push(Child::Resolved(p)),
+                None => {
+                    let why = if s.category == Category::OtherChild {
+                        "immune interpreter"
+                    } else {
+                        "dynamic / unresolvable path"
+                    };
+                    out.push(Child::Note(format!(
+                        "line {}: {} {} - {}",
+                        s.line, s.label, s.target, why
+                    )));
+                }
+            }
+        }
+        out
     }
 
     fn parse_sites(src: &str) -> Result<Vec<Site>> {

@@ -75,7 +75,9 @@ is lint-clean (the shellcheck check above proves it adds no findings). bash>=5 /
 zsh resolve the real path with or without a shebang; macOS bash 3.2 has no
 `BASH_ARGV0`; dash/ksh still need `--argv0 source`. The checksum gate is unaffected
 - it runs over the pre-rewrite bytes, so a pin verifies the file on disk shebang or
-not. Inspect the served bytes for any script with `scriptbox emit <shell> x.sh`.
+not. Inspect the served bytes with `scriptbox emit <shell> x.sh` - or the whole
+frozen tree (parent + every resolvable `source` include and shell child) with
+`scriptbox emit --subscripts=freeze <shell> x.sh`.
 
 ## The macOS gap
 
