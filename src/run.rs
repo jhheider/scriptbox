@@ -214,6 +214,19 @@ pub fn run(spec: RunSpec) -> Result<Infallible> {
 /// emit`: useful for seeing what actually runs, and a target for `shellcheck`
 /// (the served copy should add no linter findings the original wouldn't).
 pub fn emit(spec: &RunSpec) -> Result<Vec<u8>> {
+    // `--subscripts` wrapping rewrites children into `source /dev/fd/N` backed by
+    // held runtime fds - meaningless in a static dump - so `emit` refuses it
+    // rather than silently ignoring it. Use `--subscripts=report` on a real run to
+    // list subscript sites.
+    if let Some(s) = spec.subscripts {
+        if s != Subscripts::Off {
+            bail!(
+                "`emit` shows the $0-rewritten bytes only; it does not apply `--subscripts` \
+                 (its wrapping uses runtime fds). Run with `--subscripts=report` to list \
+                 subscript sites instead."
+            );
+        }
+    }
     let real_path = std::fs::canonicalize(&spec.script).unwrap_or_else(|_| spec.script.clone());
     let source = real_path.to_string_lossy().into_owned();
     let bytes = loader::read_script(&spec.script)?;
@@ -416,6 +429,71 @@ mod tests {
             std::fs::read(p.argv[1].split(' ').nth(1).unwrap().trim_matches('\'')).unwrap(),
             b"#!/usr/bin/env -S scriptbox dash\necho hi\n"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // --- emit(): same read/resolve/rewrite as plan, minus freeze/exec ---
+
+    #[test]
+    fn emit_applies_the_argv0_rewrite() {
+        let path = tmp("#!/bin/bash\necho hi\n");
+        let out =
+            String::from_utf8(emit(&run_spec(path.clone(), &["bash"], Argv0::Rewrite)).unwrap())
+                .unwrap();
+        assert!(out.starts_with("#!/bin/bash\nBASH_ARGV0="), "got: {out:?}");
+        assert!(out.ends_with("; echo hi\n"), "got: {out:?}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn emit_off_and_source_modes_are_verbatim() {
+        let path = tmp("#!/bin/bash\necho hi\n");
+        for mode in [Argv0::Off, Argv0::Source] {
+            let out = emit(&run_spec(path.clone(), &["bash"], mode)).unwrap();
+            assert_eq!(out, b"#!/bin/bash\necho hi\n");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn emit_no_shebang_joins_line_one() {
+        let path = tmp("echo first\n");
+        let out =
+            String::from_utf8(emit(&run_spec(path.clone(), &["bash"], Argv0::Rewrite)).unwrap())
+                .unwrap();
+        assert!(out.starts_with("BASH_ARGV0="), "got: {out:?}");
+        assert!(out.ends_with("; echo first\n"), "got: {out:?}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn emit_resolves_the_interpreter_from_the_shebang() {
+        // No interp override; zsh comes from the shebang, giving the `0=` reset.
+        let path = tmp("#!/bin/zsh\nprint hi\n");
+        let spec = RunSpec {
+            interp_override: vec![],
+            script: path.clone(),
+            script_args: vec![],
+            argv0: Some(Argv0::Rewrite),
+            subscripts: None,
+        };
+        let out = String::from_utf8(emit(&spec).unwrap()).unwrap();
+        assert!(out.starts_with("#!/bin/zsh\n0="), "got: {out:?}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn emit_rejects_subscripts() {
+        let path = tmp("#!/bin/bash\n. ./child.sh\n");
+        let spec = RunSpec {
+            interp_override: vec!["bash".into()],
+            script: path.clone(),
+            script_args: vec![],
+            argv0: None,
+            subscripts: Some(Subscripts::Freeze),
+        };
+        let err = emit(&spec).expect_err("emit should reject --subscripts");
+        assert!(format!("{err:#}").contains("subscripts"), "got: {err:#}");
         let _ = std::fs::remove_file(&path);
     }
 
