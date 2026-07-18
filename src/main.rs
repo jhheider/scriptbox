@@ -185,7 +185,7 @@ USAGE:\n\
     scriptbox pin  <SCRIPT>     print a pin-able `# /// scriptbox` block\n\
     scriptbox hash <SCRIPT>     print the script's sha256 pin\n\
     scriptbox gc                remove freeze-tree snapshot caches from $TMPDIR\n\
-    scriptbox emit [INTERP] <SCRIPT>   print the bytes it would run, without running\n\
+    scriptbox emit [INTERP] <SCRIPT>   print the bytes it would run (--subscripts: whole tree)\n\
 \n\
 SHEBANG:\n\
     #!/usr/bin/env -S scriptbox bash      interpreter on the shebang line\n\

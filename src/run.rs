@@ -214,19 +214,28 @@ pub fn run(spec: RunSpec) -> Result<Infallible> {
 /// emit`: useful for seeing what actually runs, and a target for `shellcheck`
 /// (the served copy should add no linter findings the original wouldn't).
 pub fn emit(spec: &RunSpec) -> Result<Vec<u8>> {
-    // `--subscripts` wrapping rewrites children into `source /dev/fd/N` backed by
-    // held runtime fds - meaningless in a static dump - so `emit` refuses it
-    // rather than silently ignoring it. Use `--subscripts=report` on a real run to
-    // list subscript sites.
-    if let Some(s) = spec.subscripts {
-        if s != Subscripts::Off {
+    // With `--subscripts`, dump the whole reachable tree; otherwise just this one.
+    if let Some(m) = spec.subscripts {
+        if m != Subscripts::Off {
+            #[cfg(feature = "subscripts")]
+            {
+                let mut out = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                emit_tree(spec, &mut seen, &mut out, 0)?;
+                return Ok(out);
+            }
+            #[cfg(not(feature = "subscripts"))]
             bail!(
-                "`emit` shows the $0-rewritten bytes only; it does not apply `--subscripts` \
-                 (its wrapping uses runtime fds). Run with `--subscripts=report` to list \
-                 subscript sites instead."
+                "`emit --subscripts` needs the `subscripts` feature.\n    \
+                 cargo install --features subscripts --git https://github.com/jhheider/scriptbox"
             );
         }
     }
+    emit_one(spec)
+}
+
+/// Emit a single script's served bytes (the `$0` rewrite applied), no recursion.
+fn emit_one(spec: &RunSpec) -> Result<Vec<u8>> {
     let real_path = std::fs::canonicalize(&spec.script).unwrap_or_else(|_| spec.script.clone());
     let source = real_path.to_string_lossy().into_owned();
     let bytes = loader::read_script(&spec.script)?;
@@ -239,6 +248,56 @@ pub fn emit(spec: &RunSpec) -> Result<Vec<u8>> {
         &source,
         argv0 == Argv0::Rewrite,
     ))
+}
+
+/// Recursively dump every reachable script in the tree - the script, then each
+/// resolvable `source` include and shell child - under `# ==> <path>` headers,
+/// each with the `$0` rewrite applied. Cycle- and depth-guarded; dynamic/immune
+/// sites become `# ==> ... (not descended)` notes. Since the tree structure is in
+/// the headers, this is an inspection dump, not a single runnable script.
+#[cfg(feature = "subscripts")]
+fn emit_tree(
+    spec: &RunSpec,
+    seen: &mut std::collections::HashSet<PathBuf>,
+    out: &mut Vec<u8>,
+    depth: usize,
+) -> Result<()> {
+    const CAP: usize = 64;
+    let canonical = std::fs::canonicalize(&spec.script).unwrap_or_else(|_| spec.script.clone());
+    if depth > CAP {
+        return Ok(());
+    }
+    if !seen.insert(canonical.clone()) {
+        out.extend_from_slice(
+            format!("# ==> {} (already shown - cycle)\n\n", canonical.display()).as_bytes(),
+        );
+        return Ok(());
+    }
+    let bytes = loader::read_script(&spec.script)?;
+    out.extend_from_slice(format!("# ==> {}\n", canonical.display()).as_bytes());
+    out.extend_from_slice(&emit_one(spec)?);
+    if !out.ends_with(b"\n") {
+        out.push(b'\n');
+    }
+    out.push(b'\n');
+    for child in subscripts::child_scripts(&bytes, &canonical) {
+        match child {
+            subscripts::Child::Resolved(p) => {
+                let child_spec = RunSpec {
+                    interp_override: Vec::new(),
+                    script: p,
+                    script_args: Vec::new(),
+                    argv0: spec.argv0,
+                    subscripts: None,
+                };
+                emit_tree(&child_spec, seen, out, depth + 1)?;
+            }
+            subscripts::Child::Note(n) => {
+                out.extend_from_slice(format!("# ==> {n} (not descended)\n\n").as_bytes());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Interpreter precedence: explicit argv override > frontmatter > the script's
@@ -482,8 +541,9 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[cfg(not(feature = "subscripts"))]
     #[test]
-    fn emit_rejects_subscripts() {
+    fn emit_subscripts_needs_the_feature_on_a_lean_build() {
         let path = tmp("#!/bin/bash\n. ./child.sh\n");
         let spec = RunSpec {
             interp_override: vec!["bash".into()],
@@ -492,9 +552,76 @@ mod tests {
             argv0: None,
             subscripts: Some(Subscripts::Freeze),
         };
-        let err = emit(&spec).expect_err("emit should reject --subscripts");
-        assert!(format!("{err:#}").contains("subscripts"), "got: {err:#}");
+        let err = emit(&spec).expect_err("lean build should reject --subscripts");
+        assert!(format!("{err:#}").contains("feature"), "got: {err:#}");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(feature = "subscripts")]
+    fn tmpdir() -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "scriptbox-emittree.{}.{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[cfg(feature = "subscripts")]
+    fn tree_spec(script: PathBuf) -> RunSpec {
+        RunSpec {
+            interp_override: vec!["bash".into()],
+            script,
+            script_args: vec![],
+            argv0: Some(Argv0::Rewrite),
+            subscripts: Some(Subscripts::Freeze),
+        }
+    }
+
+    #[cfg(feature = "subscripts")]
+    #[test]
+    fn emit_subscripts_dumps_the_whole_tree() {
+        let d = tmpdir();
+        std::fs::write(d.join("child.sh"), "echo child-body\n").unwrap();
+        // parent both sources AND execs the child.
+        std::fs::write(
+            d.join("parent.sh"),
+            "#!/bin/bash\n. ./child.sh\nbash ./child.sh\n",
+        )
+        .unwrap();
+        let out = String::from_utf8(emit(&tree_spec(d.join("parent.sh"))).unwrap()).unwrap();
+        assert!(out.contains("# ==> "), "no headers: {out}");
+        assert!(
+            out.contains("parent.sh") && out.contains("child.sh"),
+            "{out}"
+        );
+        assert!(out.contains("echo child-body"), "child body missing: {out}");
+        // The child is reached twice (source + exec); the 2nd is a dedup note.
+        assert!(out.contains("already shown - cycle"), "no dedup: {out}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(feature = "subscripts")]
+    #[test]
+    fn emit_subscripts_guards_cycles() {
+        let d = tmpdir();
+        std::fs::write(d.join("a.sh"), "#!/bin/bash\n. ./b.sh\n").unwrap();
+        std::fs::write(d.join("b.sh"), "#!/bin/bash\n. ./a.sh\n").unwrap();
+        // Must terminate rather than recurse forever.
+        let out = String::from_utf8(emit(&tree_spec(d.join("a.sh"))).unwrap()).unwrap();
+        assert!(out.contains("cycle"), "no cycle note: {out}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(feature = "subscripts")]
+    #[test]
+    fn emit_subscripts_notes_dynamic_sites() {
+        let d = tmpdir();
+        std::fs::write(d.join("p.sh"), "#!/bin/bash\n. \"$DIR/lib.sh\"\n").unwrap();
+        let out = String::from_utf8(emit(&tree_spec(d.join("p.sh"))).unwrap()).unwrap();
+        assert!(out.contains("not descended"), "no dynamic note: {out}");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

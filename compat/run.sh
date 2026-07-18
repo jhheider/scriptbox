@@ -173,6 +173,18 @@ if "$SB" --subscripts=report bash "$ID/source_parent.sh" >/dev/null 2>&1; then
     else
         fail=$((fail+1)); printf '  %sFAIL%s subscripts      freeze exec-child: plain=[%s] boxed=[%s]\n' "$RED" "$RST" "$ep" "$eb"
     fi
+    # emit --subscripts dumps the whole tree. Use a LITERAL-path parent so the
+    # static walker can resolve the child (the $here/child.sh fixtures are dynamic
+    # on purpose - robust at runtime, but not statically resolvable).
+    mkdir -p "$TMP/tree"
+    printf 'echo tree-child-body\n' > "$TMP/tree/tchild.sh"
+    printf '#!/bin/bash\n. ./tchild.sh\n' > "$TMP/tree/tparent.sh"
+    te=$("$SB" emit --subscripts=freeze bash "$TMP/tree/tparent.sh" 2>/dev/null)
+    if printf '%s' "$te" | grep -q 'tchild.sh' && printf '%s' "$te" | grep -q 'tree-child-body'; then
+        pass=$((pass+1)); printf '  %sPASS%s emit tree       --subscripts dumps the parent + the sourced child\n' "$GRN" "$RST"
+    else
+        fail=$((fail+1)); printf '  %sFAIL%s emit tree       --subscripts did not include the child\n' "$RED" "$RST"
+    fi
 else
     printf '\n%s(--subscripts unavailable: lean build. Build with --features subscripts to test it.)%s\n' "$DIM" "$RST"
 fi
