@@ -49,24 +49,25 @@ found.
 | Case | Flag needed | Why |
 |---|---|---|
 | Most idioms | none | scriptbox is transparent by default |
-| `$0` on `bash`>=5 / `zsh` | none, **but a shebang must be present** | rewrite swaps the shebang line (see finding) |
+| `$0` on `bash`>=5 / `zsh` | none | rewrite swaps the shebang line, or prepends when there's none |
 | `$0` on `dash` / `ksh` | `--argv0 source` | no in-run `$0` rewrite mechanism; dot-source sets a real `$0` |
 | `$0` on `zsh` | default (not `source`) | zsh's dot-source resets `$0` to the fd path, so `source` mode is worse there |
 | `source`ing a sibling by path | none (uses `$SCRIPTBOX_SOURCE`) | the fd path can't be `dirname`'d; `$SCRIPTBOX_SOURCE` is the real path |
 | freezing a `source`d child | `--subscripts=freeze` | otherwise the child is a live re-read, one level down |
 
-## Finding: `$0` rewrite requires a shebang line
+## Fixed: `$0` rewrite handles shebang-less scripts (was issue #1)
 
-The default `--argv0 rewrite` works by **swapping the script's shebang line** for
-an injected `$0` prologue (this preserves line numbers). Consequence: a script
-with **no shebang**, run via an explicit `scriptbox <shell> script`, never gets
-the rewrite - `$0` stays the fd path (`/proc/self/fd/N` on Linux, `/dev/fd/N` on
-macOS) even on `bash`>=5 / `zsh`, where the rewrite would otherwise succeed.
+The suite originally caught this: the `--argv0 rewrite` used to only **swap the
+script's shebang line** for the injected `$0` prologue, so a script with **no
+shebang**, run via an explicit `scriptbox <shell> script`, silently kept the fd
+path for `$0` even on `bash`>=5 / `zsh`.
 
-This does *not* affect the shebang-launch path (`#!/usr/bin/env -S scriptbox
-bash`), because that line *is* a shebang. It only bites explicit invocation of a
-shebang-less file. Reproduced on Linux (bash 5) and macOS. Filed upstream; the
-call is fix (prepend when no shebang, accepting a 1-line offset) vs. document.
+Now fixed (`src/interpreter.rs`): when there is no shebang to swap, the prologue is
+**prepended** as a new line 1 - a 1-line offset in error line numbers, the small
+price of getting `$0` right. bash>=5 / zsh resolve the real path with or without a
+shebang; macOS bash 3.2 has no `BASH_ARGV0` so `$0` stays the fd path there;
+dash/ksh still need `--argv0 source`. The checksum gate is unaffected - it runs
+over the pre-rewrite bytes, so a pin verifies the file on disk shebang or not.
 
 ## The macOS gap
 

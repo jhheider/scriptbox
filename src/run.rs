@@ -354,6 +354,21 @@ mod tests {
     }
 
     #[test]
+    fn plan_rewrites_and_verifies_a_pinned_shebang_less_script() {
+        // No shebang: the pin still verifies (checksum runs over the pre-rewrite
+        // bytes, shebang or not), and Rewrite prepends the BASH_ARGV0 reset rather
+        // than silently leaving $0 as the fd path.
+        let template = "# /// scriptbox\n# checksum = \"PLACEHOLDER\"\n# ///\necho hi\n";
+        let pin = checksum::pin_of(template.as_bytes());
+        let path = tmp(&template.replace("PLACEHOLDER", &pin));
+        let p = plan(&run_spec(path.clone(), &["bash"], Argv0::Rewrite)).unwrap();
+        let served = String::from_utf8(std::fs::read(&p.immutable.fd_path).unwrap()).unwrap();
+        assert!(served.starts_with("BASH_ARGV0="), "got: {served:?}");
+        assert!(served.ends_with("\necho hi\n"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn plan_resolves_interpreter_from_frontmatter_without_argv() {
         let path = tmp(
             "#!/usr/bin/env scriptbox\n# /// scriptbox\n# interpreter = \"zsh\"\n# ///\necho hi\n",
