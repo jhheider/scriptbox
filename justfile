@@ -26,6 +26,12 @@ test-linux:
         apt-get -qq update >/dev/null && apt-get -qq install -y zsh ksh dash >/dev/null && \
         cp -r /src /work && cd /work && cargo test'
 
+# Real-world cross-shell compatibility suite in Docker (Linux memfd path).
+# See compat/README.md; run compat/run.sh directly on macOS for that path.
+compat:
+    docker build -t scriptbox-compat -f compat/Dockerfile .
+    docker run --rm scriptbox-compat
+
 # Coverage via cargo-llvm-cov (matches CI)
 coverage:
     cargo llvm-cov --workspace --all-features
