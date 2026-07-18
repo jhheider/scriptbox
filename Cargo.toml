@@ -1,6 +1,6 @@
 [package]
 name = "scriptbox"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["Jacob Heider <jhheider@gmail.com>"]
 repository = "https://github.com/jhheider/scriptbox"
@@ -20,7 +20,7 @@ subscripts = ["dep:brush-parser"]
 [dependencies]
 # rustix: memfd_create + seals (Linux), open/unlink/fcntl, with a small,
 # mostly-libc-free footprint (linux_raw backend, no libc, on linux aarch64/x86).
-rustix = { version = "1", features = ["fs"] }
+rustix = { version = "1", features = ["fs", "process"] }
 sha2 = "0.10"
 anyhow = "1"
 # Optional: shell parser for `--features subscripts` only (see [features]).

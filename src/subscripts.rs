@@ -152,12 +152,8 @@ mod detect {
 
         let exe = std::env::current_exe().context("finding the scriptbox binary")?;
         let exe = exe.to_string_lossy();
-        let propagate = if ctx.mode == Subscripts::FreezeTree {
-            "freeze-tree"
-        } else {
-            "wrap"
-        };
-        let wrap_prefix = format!("{} --subscripts={} ", shell_squote(&exe), propagate);
+        // One protective mode; children inherit it (and the shared cache via env).
+        let wrap_prefix = format!("{} --subscripts=freeze ", shell_squote(&exe));
 
         // Build edits and the per-site outcome IN LOCKSTEP, so the report never
         // claims a site was frozen/wrapped when no edit was actually made.
@@ -479,7 +475,8 @@ mod detect {
                     }
                 }
             }
-            // Arithmetic / coprocess and command-substitution interiors aren't
+            ast::CompoundCommand::ArithmeticForClause(f) => walk_list(&f.body.list, out),
+            // Coprocess bodies and command-substitution interiors aren't
             // descended (brush's Word carries only raw text); such sites are
             // simply not seen.
             _ => {}

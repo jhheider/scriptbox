@@ -101,7 +101,7 @@ fn parse_run(args: &[String]) -> Result<Action> {
         } else if let Some(v) = flag.strip_prefix("--subscripts=") {
             subscripts = Some(Subscripts::parse(v)?);
         } else if flag == "--subscripts" {
-            subscripts = Some(Subscripts::Report);
+            subscripts = Some(Subscripts::Freeze); // bare flag protects; =report just looks
         } else if flag == "--no-subscripts" {
             subscripts = Some(Subscripts::Off);
         } else {
@@ -185,14 +185,13 @@ SWITCHES (also settable in the `# /// scriptbox` block; a flag wins):\n\
                            source   dot-source for a real $0 on every POSIX\n\
                                     shell, at the cost of sourced-mode semantics\n\
                            off      leave $0 as the fd path\n\
-    --subscripts[=MODE]  analyze child invocations (source/. and interpreter\n\
-                         calls) [{subs_note}]. MODE:\n\
-                           report       detect + list them (default bare flag)\n\
-                           wrap         route shell children through scriptbox,\n\
-                                        freezing each per-invocation\n\
-                           freeze-tree  wrap + a launch-scoped read-only snapshot\n\
-                                        cache: the whole tree frozen once,\n\
-                                        consistent even against mid-run edits\n\
+    --subscripts[=MODE]  extend immutability to a script's children (source/.\n\
+                         and shell interpreter calls) [{subs_note}]. MODE:\n\
+                           freeze   freeze the whole tree: route shell children\n\
+                                    through scriptbox and freeze source includes,\n\
+                                    from a launch-scoped snapshot cache (default\n\
+                                    for the bare flag)\n\
+                           report   just detect + list the child sites\n\
                            off\n\
 \n\
     -V, --version    -h, --help\n\
@@ -304,7 +303,7 @@ mod tests {
             panic!()
         };
         assert_eq!(c.argv0, Some(Argv0::Off));
-        assert_eq!(c.subscripts, Some(Subscripts::Report));
+        assert_eq!(c.subscripts, Some(Subscripts::Freeze)); // bare flag protects
 
         // A bad mode is a clear error.
         assert!(parse(&argv(&["--argv0=nonsense", "bash", sp])).is_err());

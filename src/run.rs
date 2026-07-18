@@ -65,7 +65,7 @@ fn plan(spec: &RunSpec) -> Result<Plan> {
     // counter in the env; past a high cap, refuse rather than spawn unboundedly.
     // (Doesn't affect ordinary non-wrapped runs.)
     const WRAP_DEPTH_CAP: u32 = 256;
-    let wrapping = matches!(subs, Subscripts::Wrap | Subscripts::FreezeTree);
+    let wrapping = subs == Subscripts::Freeze;
     let depth = std::env::var("SCRIPTBOX_DEPTH")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -78,10 +78,10 @@ fn plan(spec: &RunSpec) -> Result<Plan> {
         );
     }
 
-    // `freeze-tree`: serve the whole tree from a launch-scoped, path-keyed,
+    // `freeze`: serve the whole tree from a launch-scoped, path-keyed,
     // read-only, pinned snapshot cache, so every invocation of a script sees the
     // same bytes even if it's edited on disk mid-run. Other modes read disk.
-    let (bytes, cache) = if subs == Subscripts::FreezeTree {
+    let (bytes, cache) = if subs == Subscripts::Freeze {
         let dir = cache::get_or_create()?;
         let frozen = cache::frozen_bytes(&dir, &real_path, &disk_bytes)?;
         (frozen, Some(dir.to_string_lossy().into_owned()))

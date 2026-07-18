@@ -368,7 +368,7 @@ fn subscripts_reports_resolvable_and_dynamic_sites() {
         "#!/usr/bin/env -S scriptbox bash\nsource ./lib.sh\n. \"$HOME/u.sh\"\nbash -c 'true'\necho hi\n",
     );
     let out = scriptbox()
-        .arg("--subscripts")
+        .arg("--subscripts=report")
         .arg("bash")
         .arg(&path)
         .output()
@@ -427,7 +427,7 @@ fn subscripts_wrap_freezes_a_shell_child() {
     // wrap mode: the child is routed through scriptbox -> frozen (never runs it).
     std::fs::write(&child, &child_body).unwrap();
     let wrapped = scriptbox()
-        .arg("--subscripts=wrap")
+        .arg("--subscripts=freeze")
         .arg("bash")
         .arg(&parent)
         .output()
@@ -449,58 +449,49 @@ fn subscripts_wrap_freezes_a_shell_child() {
 
 #[cfg(feature = "subscripts")]
 #[test]
-fn freeze_tree_ignores_a_cross_invocation_edit() {
+fn freeze_ignores_a_cross_invocation_edit() {
     if !have("bash") {
         return;
     }
-    // A(first) -> B edits A.sh on disk -> B calls A(second). Under `wrap` the
-    // second A re-reads the edit; under `freeze-tree` it reuses the snapshot.
+    // A(first) -> B edits A.sh on disk -> B calls A(second). The whole tree runs
+    // from one launch-scoped snapshot cache, so the second A reuses the frozen
+    // snapshot and the edit can't leak in.
     let a = write_script("ftA", "");
     let b = write_script("ftB", "");
-    let a_body = format!(
-        "#!/usr/bin/env -S scriptbox bash\necho A:$1\n[ \"$1\" = first ] && bash {}\ntrue\n",
-        b.display()
-    );
-    let b_body = format!(
-        "#!/usr/bin/env -S scriptbox bash\nprintf 'echo A_INJECTED\\n' >> {}\nbash {} second\n",
-        a.display(),
-        a.display()
-    );
-    let reset = || {
-        std::fs::write(&a, &a_body).unwrap();
-        std::fs::write(&b, &b_body).unwrap();
-    };
+    std::fs::write(
+        &a,
+        format!(
+            "#!/usr/bin/env -S scriptbox bash\necho A:$1\n[ \"$1\" = first ] && bash {}\ntrue\n",
+            b.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &b,
+        format!(
+            "#!/usr/bin/env -S scriptbox bash\nprintf 'echo A_INJECTED\\n' >> {}\nbash {} second\n",
+            a.display(),
+            a.display()
+        ),
+    )
+    .unwrap();
 
-    reset();
-    let wrapped = scriptbox()
-        .arg("--subscripts=wrap")
-        .arg("bash")
-        .arg(&a)
-        .arg("first")
-        .output()
-        .unwrap();
-    assert!(
-        stdout(&wrapped).contains("A_INJECTED"),
-        "wrap: the cross-invocation edit should leak; got {:?}",
-        stdout(&wrapped)
-    );
-
-    reset();
     let frozen = scriptbox()
-        .arg("--subscripts=freeze-tree")
+        .arg("--subscripts=freeze")
         .arg("bash")
         .arg(&a)
         .arg("first")
+        .env_remove("SCRIPTBOX_CACHE")
         .output()
         .unwrap();
     assert!(
         stdout(&frozen).contains("A:first") && stdout(&frozen).contains("A:second"),
-        "freeze-tree: both invocations should still run: {:?}",
+        "both invocations should still run: {:?}",
         stdout(&frozen)
     );
     assert!(
         !stdout(&frozen).contains("A_INJECTED"),
-        "freeze-tree: the cached snapshot must win over the disk edit; got {:?}",
+        "the cached snapshot must win over the mid-run disk edit; got {:?}",
         stdout(&frozen)
     );
 
@@ -539,7 +530,7 @@ fn source_freeze_insulates_a_streaming_source() {
     // scriptbox freezes the include -> the injected line does not run.
     std::fs::write(&lib, &lib_body).unwrap();
     let out = scriptbox()
-        .arg("--subscripts=wrap")
+        .arg("--subscripts=freeze")
         .arg("zsh")
         .arg(&caller)
         .output()
@@ -557,7 +548,7 @@ fn source_freeze_insulates_a_streaming_source() {
 
 #[cfg(feature = "subscripts")]
 #[test]
-fn freeze_tree_survives_parallel_branches() {
+fn freeze_survives_parallel_branches() {
     // Regression: the cache write path was an unlocked check-then-act; two
     // parallel branches freezing the same shared lib raced and one got EACCES.
     if !have("bash") {
@@ -596,7 +587,7 @@ fn freeze_tree_survives_parallel_branches() {
 
     for i in 0..20 {
         let out = scriptbox()
-            .arg("--subscripts=freeze-tree")
+            .arg("--subscripts=freeze")
             .arg("bash")
             .arg(&root)
             .env_remove("SCRIPTBOX_CACHE")
@@ -631,7 +622,7 @@ fn report_only_marks_frozen_when_actually_frozen() {
     .unwrap();
 
     let out = scriptbox()
-        .arg("--subscripts=wrap")
+        .arg("--subscripts=freeze")
         .arg("bash")
         .arg(&script)
         .output()
@@ -648,7 +639,7 @@ fn report_only_marks_frozen_when_actually_frozen() {
     )
     .unwrap();
     let out2 = scriptbox()
-        .arg("--subscripts=wrap")
+        .arg("--subscripts=freeze")
         .arg("bash")
         .arg(&script)
         .output()

@@ -46,19 +46,15 @@ pub enum Subscripts {
     /// Statically detect and report resolvable `source`/interpreter call sites.
     /// Detection only - it does not touch what runs.
     Report,
-    /// Rewrite resolvable *shell* child invocations (`bash child.sh`, `./x.sh`)
-    /// to route through scriptbox, so each child is frozen too (recursively).
-    /// Each invocation freezes its target fresh from disk. `source`/`.`
-    /// (in-process), dynamic paths, and already-immune interpreters
-    /// (python/ruby/node) are reported but left unwrapped.
-    Wrap,
-    /// Like `Wrap`, but backed by a launch-scoped, read-only (mode 0400),
-    /// pin-on-copy snapshot cache keyed by canonical path: the whole reachable
-    /// tree is frozen at first encounter and every invocation reuses the same
-    /// snapshot. Consistent across the tree (an edit to a script mid-run can't
-    /// leak into a later invocation of it) - stronger than `Wrap`, at the cost
-    /// of ignoring intra-run edits.
-    FreezeTree,
+    /// Protect the whole reachable shell tree: route shell children
+    /// (`bash child.sh`, `./x.sh`) through scriptbox and freeze `source`/`.`
+    /// includes into inherited fds, recursively - all served from a
+    /// launch-scoped, read-only (0400), pin-on-copy snapshot cache keyed by
+    /// canonical path, so every invocation of a script in one tree run sees the
+    /// same bytes even against a mid-run edit. Dynamic paths and already-immune
+    /// interpreters (python/ruby/node) are reported but left alone. The cache is
+    /// reaped automatically on a later launch (or `scriptbox gc`).
+    Freeze,
 }
 
 impl Subscripts {
@@ -72,11 +68,11 @@ impl Subscripts {
     pub fn parse(s: &str) -> Result<Subscripts> {
         Ok(match s.trim().to_ascii_lowercase().as_str() {
             "off" | "none" | "false" => Subscripts::Off,
-            "report" | "on" | "true" => Subscripts::Report,
-            "wrap" => Subscripts::Wrap,
-            "freeze-tree" | "freeze" | "tree" => Subscripts::FreezeTree,
+            "report" => Subscripts::Report,
+            // One protective mode; the old `wrap`/`freeze-tree` names still map to it.
+            "freeze" | "on" | "true" | "wrap" | "freeze-tree" | "tree" => Subscripts::Freeze,
             other => {
-                bail!("unknown subscripts mode `{other}` (want: off | report | wrap | freeze-tree)")
+                bail!("unknown subscripts mode `{other}` (want: off | report | freeze)")
             }
         })
     }
@@ -98,13 +94,14 @@ mod tests {
     fn subscripts_parsing() {
         assert_eq!(Subscripts::parse("report").unwrap(), Subscripts::Report);
         assert_eq!(Subscripts::parse("off").unwrap(), Subscripts::Off);
-        assert_eq!(Subscripts::parse("wrap").unwrap(), Subscripts::Wrap);
+        assert_eq!(Subscripts::parse("freeze").unwrap(), Subscripts::Freeze);
+        // Back-compat: the old two protective names both collapse to Freeze.
+        assert_eq!(Subscripts::parse("wrap").unwrap(), Subscripts::Freeze);
         assert_eq!(
             Subscripts::parse("freeze-tree").unwrap(),
-            Subscripts::FreezeTree
+            Subscripts::Freeze
         );
-        assert_eq!(Subscripts::parse("freeze").unwrap(), Subscripts::FreezeTree);
         assert!(Subscripts::parse("nonsense").is_err());
-        assert!(!Subscripts::Off.needs_parser() && Subscripts::Wrap.needs_parser());
+        assert!(!Subscripts::Off.needs_parser() && Subscripts::Freeze.needs_parser());
     }
 }

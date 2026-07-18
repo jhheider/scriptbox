@@ -188,39 +188,30 @@ there.
 
 **Subscripts (experimental, opt-in).** By default scriptbox freezes only the
 top-level script; a `source`d file or a `bash child.sh` reintroduces the hazard
-one level down. `--subscripts` statically finds those child invocations. Two
-modes:
+one level down. `--subscripts` extends immutability to a script's children:
 
-- **`report`** (the bare flag) - detect and list them.
-- **`wrap`** - route resolvable *shell* children (`bash child.sh`, `./x.sh`)
-  through scriptbox so each is frozen too (recursively), and freeze resolvable
-  `source`/`.` includes into an inherited immutable fd (`source /dev/fd/N`) - so
-  a streaming source (zsh's does stream) can't change out from under the caller
-  either. Each invocation freezes fresh from disk.
-- **`freeze-tree`** - like `wrap`, but backed by a launch-scoped, read-only
-  (mode 0400), pin-on-copy snapshot cache keyed by canonical path. The whole
-  reachable tree is frozen at first encounter and every invocation reuses the
-  same snapshot, so an edit to a script *between* invocations can't leak into a
-  later one (which plain `wrap` allows). Stronger consistency, at the cost of
-  ignoring intra-run edits. Wrapped trees also carry a depth counter that caps
-  runaway mutual recursion instead of fork-bombing.
-
-Dynamic paths and already-immune interpreters (python/ruby/node) are reported but
-left alone. The analyzer uses a real shell parser (a heavy dependency), so it's a
-non-default feature - **the prebuilt binaries (Homebrew, the curl installer, the
-release archives) include it**; only a from-source `cargo install` is lean:
+- **`freeze`** (the bare flag) - protect the whole tree. Resolvable *shell*
+  children (`bash child.sh`, `./x.sh`) are routed through scriptbox so each is
+  frozen too (recursively), and resolvable `source`/`.` includes are frozen into
+  an inherited immutable fd (`source /dev/fd/N`) - so a streaming source (zsh's
+  streams) can't change out from under the caller either. The tree runs from one
+  launch-scoped, read-only, pin-on-copy snapshot cache, so a script edited
+  *between* invocations in the run can't leak in; the cache is reaped
+  automatically on a later launch. A depth counter caps runaway recursion.
+- **`report`** - just detect and list the child sites; change nothing.
 
 ```sh
-scriptbox --subscripts=freeze-tree bash ./deploy.sh        # brew/curl binaries
-cargo install --features subscripts --git https://github.com/jhheider/scriptbox  # from source
-scriptbox gc                                                # reap freeze-tree caches
+scriptbox --subscripts bash ./deploy.sh        # protect the tree (prebuilt binaries include the analyzer)
+scriptbox --subscripts=report bash ./deploy.sh # just look
+cargo install --features subscripts --git https://github.com/jhheider/scriptbox  # from source (default is lean)
 ```
 
-Literal paths resolve; paths built from variables or command substitution are
-reported unresolvable - the same wall shellcheck hits (SC1090), and the eventual
-answer is a directive or a runtime trace. The remaining rough edge: the
-`freeze-tree` cache dir isn't reaped automatically (the root `exec`s away), so
-run `scriptbox gc` to clear stale caches from `$TMPDIR`.
+**What it actually covers**, honestly: only *literal* paths freeze. The common
+`source "$DIR/lib.sh"` and anything inside a `$(...)` are reported but left as
+live reads - the same wall shellcheck hits (SC1090); the eventual answer is a
+directive or a runtime trace. So `freeze` closes the easy majority and is honest
+about the rest (each site's status is reported). Already-immune interpreters
+(python/ruby/node) are left alone. `scriptbox gc` force-clears any caches.
 
 ## License
 
