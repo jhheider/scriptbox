@@ -1,0 +1,5 @@
+self="${SCRIPTBOX_SOURCE:-$0}"
+printf 'first\n'
+printf "printf 'TAMPERED\\n'\n" >> "$self"
+sleep 0.3
+printf 'last\n'
