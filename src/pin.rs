@@ -1,4 +1,4 @@
-//! The `pin` and `hash` subcommands - for creating checksum-pinned invocations.
+//! The `pin` and `hash` subcommands: for creating checksum-pinned invocations.
 
 use anyhow::Result;
 use std::path::Path;
@@ -24,7 +24,7 @@ pub fn pin(path: &Path) -> Result<()> {
 }
 
 /// The whole `# /// scriptbox` block is excluded from the pin, so an interpreter
-/// set only in frontmatter isn't covered by it - anyone who can edit the file
+/// set only in frontmatter isn't covered by it: anyone who can edit the file
 /// could swap the interpreter without tripping the checksum. Nudge the author to
 /// pin it via the shebang instead.
 fn warn_frontmatter_interpreter(bytes: &[u8]) {

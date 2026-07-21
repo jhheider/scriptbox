@@ -2,11 +2,11 @@
 # scriptbox real-world compatibility suite.
 #
 # Two kinds of checks:
-#   * TRANSPARENCY - scriptbox must be invisible: `scriptbox <shell> x.sh` must
+#   * TRANSPARENCY: scriptbox must be invisible: `scriptbox <shell> x.sh` must
 #     produce the same stdout+exit as `<shell> x.sh`. A divergence is a scriptbox
 #     bug (or a case that needs a documented flag). Compared per-shell, so inherent
 #     cross-shell differences (array indexing, etc.) don't create false positives.
-#   * INSULATION - the whole point: a script that edits itself mid-run must be
+#   * INSULATION: the whole point: a script that edits itself mid-run must be
 #     frozen under scriptbox (the tampered line must NOT run) while a plain shell
 #     is vulnerable to it.
 #
@@ -143,7 +143,7 @@ if command -v shellcheck >/dev/null 2>&1; then
         done
     done
 else
-    printf '\n%s(shellcheck absent - skipped the no-added-findings check)%s\n' "$DIM" "$RST"
+    printf '\n%s(shellcheck absent, skipped the no-added-findings check)%s\n' "$DIM" "$RST"
 fi
 
 hdr "source a sibling (self-location via \$SCRIPTBOX_SOURCE)"
@@ -175,7 +175,7 @@ if "$SB" --subscripts=report bash "$ID/source_parent.sh" >/dev/null 2>&1; then
     fi
     # emit --subscripts dumps the whole tree. Use a LITERAL-path parent so the
     # static walker can resolve the child (the $here/child.sh fixtures are dynamic
-    # on purpose - robust at runtime, but not statically resolvable).
+    # on purpose: robust at runtime, but not statically resolvable).
     mkdir -p "$TMP/tree"
     printf 'echo tree-child-body\n' > "$TMP/tree/tchild.sh"
     printf '#!/bin/bash\n. ./tchild.sh\n' > "$TMP/tree/tparent.sh"
@@ -208,7 +208,7 @@ if command -v curl >/dev/null 2>&1; then
         fi
     done
 else
-    printf '  %sNOTE%s curl absent - skipped real-installer pass%s\n' "$DIM" "$RST" "$RST"
+    printf '  %sNOTE%s curl absent, skipped real-installer pass%s\n' "$DIM" "$RST" "$RST"
 fi
 
 printf '\n%s== summary ==%s  %sPASS %d%s  %sFAIL %d%s  %sNOTE %d%s\n' \

@@ -1,4 +1,4 @@
-//! Subscript analysis: find a script's child invocations - `source`/`.` includes
+//! Subscript analysis: find a script's child invocations: `source`/`.` includes
 //! and interpreter calls (`bash x.sh`, `python foo.py`, `./run.sh`).
 //!
 //! In `wrap`/`freeze-tree` mode scriptbox routes the whole shell tree through
@@ -18,7 +18,7 @@ use anyhow::Result;
 use std::path::Path;
 
 /// The result of processing a script: the bytes to serve, plus any immutable fds
-/// backing frozen `source` includes - which must be held open until `exec`.
+/// backing frozen `source` includes, which must be held open until `exec`.
 pub struct Applied {
     pub bytes: Vec<u8>,
     pub held: Vec<ImmutableScript>,
@@ -91,9 +91,9 @@ mod detect {
 
     #[derive(PartialEq, Clone, Copy)]
     enum Category {
-        Source,     // source / . - freeze the include into an fd, in-process
-        ShellChild, // a shell interpreter call or a direct ./x.sh - run under scriptbox
-        OtherChild, // python/ruby/node/... - already immune, not touched
+        Source,     // source / .: freeze the include into an fd, in-process
+        ShellChild, // a shell interpreter call or a direct ./x.sh: run under scriptbox
+        OtherChild, // python/ruby/node/...: already immune, not touched
     }
 
     struct Site {
@@ -226,7 +226,7 @@ mod detect {
             return Ok(None); // missing, or ambiguous between script-dir and CWD
         };
         if let Some(fd) = ctx.frozen.get(&canonical) {
-            return Ok(Some(fd.clone())); // already frozen once - reuse the same fd
+            return Ok(Some(fd.clone())); // already frozen once, reuse the same fd
         }
         if ctx.in_progress.contains(&canonical) {
             return Ok(None); // genuine cycle: leave it, the shell will loop as written

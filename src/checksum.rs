@@ -1,6 +1,6 @@
 //! Optional integrity verification: a `sha256:<hex>` pin over the script bytes.
 //!
-//! This is a *separate* guarantee from runtime immutability - it answers "is
+//! This is a *separate* guarantee from runtime immutability; it answers "is
 //! this the script I expect?" (provenance), not "can it change while running?".
 
 use sha2::{Digest, Sha256};
@@ -9,11 +9,11 @@ use std::fmt::Write as _;
 /// The canonical pin of a script: `sha256:<hex>` over the script's bytes *with
 /// its entire `# /// scriptbox` frontmatter block excluded*.
 ///
-/// The block is scriptbox's own config - interpreter, checksum, and
-/// frontmatter-flippable switches - so it must not participate in the pin:
+/// The block is scriptbox's own config: interpreter, checksum, and
+/// frontmatter-flippable switches, so it must not participate in the pin:
 /// otherwise pinning would be circular (the checksum line), and flipping a
-/// switch would spuriously break the pin. Everything else - the shebang and the
-/// whole script body - still contributes, so tampering with what *runs* is
+/// switch would spuriously break the pin. Everything else (the shebang and the
+/// whole script body) still contributes, so tampering with what *runs* is
 /// still caught. (Note: an interpreter set only in frontmatter is therefore not
 /// covered by the pin; put it on the shebang line if you need it pinned.)
 pub fn pin_of(bytes: &[u8]) -> String {
@@ -60,7 +60,7 @@ fn digest_input(bytes: &[u8]) -> Vec<u8> {
 }
 
 /// For a raw physical line, the trimmed body after stripping a leading `#` and
-/// one optional space - or `None` if the line isn't a `#` comment.
+/// one optional space, or `None` if the line isn't a `#` comment.
 fn comment_body(line: &str) -> Option<&str> {
     let after = line.trim_start().strip_prefix('#')?;
     Some(after.strip_prefix(' ').unwrap_or(after).trim())
@@ -96,8 +96,8 @@ mod tests {
 
     #[test]
     fn pin_is_invariant_to_the_whole_frontmatter_block() {
-        // Any change *inside* the block - the checksum value (non-circular
-        // pinning), the interpreter, a switch - must not change the pin.
+        // Any change *inside* the block, whether the checksum value (non-circular
+        // pinning), the interpreter, a switch, must not change the pin.
         let a = b"#!/bin/bash\n# /// scriptbox\n# checksum = \"sha256:aaaa\"\n# ///\necho hi\n";
         let b = b"#!/bin/bash\n# /// scriptbox\n# interpreter = \"zsh\"\n# argv0 = \"source\"\n# checksum = \"sha256:bbbb\"\n# ///\necho hi\n";
         assert_eq!(pin_of(a), pin_of(b));

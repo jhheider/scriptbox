@@ -3,7 +3,7 @@
 //! The first scriptbox in a tree creates a private cache directory (mode 0700)
 //! and exports its path as `$SCRIPTBOX_CACHE`, which every descendant inherits.
 //! A script is frozen into the cache the first time *any* invocation in the tree
-//! encounters it - copied in, pinned (its exact-bytes sha256 recorded), and made
+//! encounters it: copied in, pinned (its exact-bytes sha256 recorded), and made
 //! read-only (mode 0400). Every later invocation of the same canonical path
 //! reuses that snapshot after re-verifying its pin, so the whole tree runs
 //! against one consistent, tamper-checked set of bytes even if a script is
@@ -109,7 +109,7 @@ pub fn frozen_bytes(cache_dir: &Path, canonical: &Path, disk_bytes: &[u8]) -> Re
         let got = checksum::sha256_pin(&bytes);
         if want.trim() != got {
             anyhow::bail!(
-                "cached snapshot for `{}` failed its pin - the cache was modified.\n  \
+                "cached snapshot for `{}` failed its pin; the cache was modified.\n  \
                  expected: {}\n  actual:   {}",
                 canonical.display(),
                 want.trim(),
@@ -120,7 +120,7 @@ pub fn frozen_bytes(cache_dir: &Path, canonical: &Path, disk_bytes: &[u8]) -> Re
     }
 
     // Miss: pin on copy. Write each file to a private temp then atomically
-    // rename into place - so a concurrent freezer (freeze-tree's whole point is a
+    // rename into place, so a concurrent freezer (freeze-tree's whole point is a
     // shared, multi-process cache; parallel `a & b & wait` branches hit this)
     // never sees a half-written file or races a 0400-locked destination. The
     // snapshot is renamed LAST, so anyone who sees `.snap` also sees `.pin`.

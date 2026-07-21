@@ -1,8 +1,8 @@
 # scriptbox compatibility suite
 
 A broad, real-world cross-shell compatibility regimen for `scriptbox`, separate
-from the unit/e2e tests in `tests/`. It runs a matrix of shell idioms - and a
-read-only pass over real public installer scripts - through `scriptbox` across
+from the unit/e2e tests in `tests/`. It runs a matrix of shell idioms, and a
+read-only pass over real public installer scripts, through `scriptbox` across
 all four shells it supports (`bash`, `zsh`, `dash`, `ksh`), reproducibly in
 Docker.
 
@@ -65,17 +65,17 @@ found.
 
 The suite caught this: the `--argv0 rewrite` used to **swap the shebang line** for
 the injected `$0` reset. That dropped the shebang (so `shellcheck` lost the shell
-dialect and added SC2148), and a shebang-less script got no rewrite at all - `$0`
+dialect and added SC2148), and a shebang-less script got no rewrite at all; `$0`
 stayed the fd path even on `bash`>=5 / `zsh`.
 
 Now (`src/interpreter.rs`) the `$0` reset is **joined onto the first body line with
-`;`** - after the shebang if there is one, else at the start. This adds no line, so
+`;`**, after the shebang if there is one, else at the start. This adds no line, so
 error line numbers stay exact, and the shebang stays on line 1, so the served copy
 is lint-clean (the shellcheck check above proves it adds no findings). bash>=5 /
 zsh resolve the real path with or without a shebang; macOS bash 3.2 has no
 `BASH_ARGV0`; dash/ksh still need `--argv0 source`. The checksum gate is unaffected
 - it runs over the pre-rewrite bytes, so a pin verifies the file on disk shebang or
-not. Inspect the served bytes with `scriptbox emit <shell> x.sh` - or the whole
+not. Inspect the served bytes with `scriptbox emit <shell> x.sh`, or the whole
 frozen tree (parent + every resolvable `source` include and shell child) with
 `scriptbox emit --subscripts=freeze <shell> x.sh`.
 
@@ -84,6 +84,6 @@ frozen tree (parent + every resolvable `source` include and shell child) with
 Docker is Linux, so this covers only scriptbox's **Linux** frozen-copy path (a
 sealed `memfd`, exec'd as `/proc/self/fd/N`). macOS uses a **different** path (a
 written-then-unlinked private temp, exec'd as `/dev/fd/N`) that Docker cannot
-exercise. Run `sh compat/run.sh <scriptbox>` on real macOS separately for it - the
+exercise. Run `sh compat/run.sh <scriptbox>` on real macOS separately for it; the
 harness is the same. (`fish`/`nushell` are intentionally out of scope; scriptbox
 does not wrap them.)

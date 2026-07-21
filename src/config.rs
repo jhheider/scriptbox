@@ -1,5 +1,5 @@
-//! Toggleable switches. Each is settable two ways with the same vocabulary - a
-//! CLI flag or a `# /// scriptbox` frontmatter key - and CLI wins over
+//! Toggleable switches. Each is settable two ways with the same vocabulary (a
+//! CLI flag or a `# /// scriptbox` frontmatter key), and CLI wins over
 //! frontmatter wins over the default. Some fixes conflict (you can't rewrite
 //! `$0` in-run *and* dot-source it), so each conflicting set is one switch with
 //! named modes rather than a pile of booleans.
@@ -38,17 +38,17 @@ impl Argv0 {
 
 /// Whether to analyze the script's child invocations (`source`/`.` and
 /// interpreter calls). Opt-in, and the detector itself is behind the
-/// `subscripts` build feature - a lean default build omits it entirely.
+/// `subscripts` build feature: a lean default build omits it entirely.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Subscripts {
     /// No subscript analysis. (default)
     Off,
     /// Statically detect and report resolvable `source`/interpreter call sites.
-    /// Detection only - it does not touch what runs.
+    /// Detection only: it does not touch what runs.
     Report,
     /// Protect the whole reachable shell tree: route shell children
     /// (`bash child.sh`, `./x.sh`) through scriptbox and freeze `source`/`.`
-    /// includes into inherited fds, recursively - all served from a
+    /// includes into inherited fds, recursively, all served from a
     /// launch-scoped, read-only (0400), pin-on-copy snapshot cache keyed by
     /// canonical path, so every invocation of a script in one tree run sees the
     /// same bytes even against a mid-run edit. Dynamic paths and already-immune

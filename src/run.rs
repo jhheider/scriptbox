@@ -26,8 +26,8 @@ pub struct RunSpec {
 
 /// Everything needed to launch the interpreter, computed without any
 /// side effects on the process (no `exec`). Splitting this out from [`run`]
-/// keeps the decision logic - checksum gate, interpreter resolution, `$0`
-/// rewrite, immutable-copy creation - testable in-process, since `run` itself
+/// keeps the decision logic: checksum gate, interpreter resolution, `$0`
+/// rewrite, immutable-copy creation, testable in-process, since `run` itself
 /// ends in `exec` and can never return on success.
 struct Plan {
     interp: String,
@@ -45,7 +45,7 @@ struct Plan {
     immutable: loader::ImmutableScript,
 }
 
-/// Read, verify, resolve, freeze - everything up to but not including `exec`.
+/// Read, verify, resolve, freeze: everything up to but not including `exec`.
 fn plan(spec: &RunSpec) -> Result<Plan> {
     let real_path = std::fs::canonicalize(&spec.script).unwrap_or_else(|_| spec.script.clone());
     let source = real_path.to_string_lossy().into_owned();
@@ -72,7 +72,7 @@ fn plan(spec: &RunSpec) -> Result<Plan> {
         .unwrap_or(0u32);
     if wrapping && depth >= WRAP_DEPTH_CAP {
         bail!(
-            "scriptbox wrap depth {depth} hit the cap of {WRAP_DEPTH_CAP} running `{}` - \
+            "scriptbox wrap depth {depth} hit the cap of {WRAP_DEPTH_CAP} running `{}`: \
              likely unbounded recursion between scripts.",
             spec.script.display()
         );
@@ -210,7 +210,7 @@ pub fn run(spec: RunSpec) -> Result<Infallible> {
 }
 
 /// Compute the exact bytes scriptbox would hand the interpreter after the `$0`
-/// rewrite - without freezing, exec'ing, or any side effect. Backs `scriptbox
+/// rewrite, without freezing, exec'ing, or any side effect. Backs `scriptbox
 /// emit`: useful for seeing what actually runs, and a target for `shellcheck`
 /// (the served copy should add no linter findings the original wouldn't).
 pub fn emit(spec: &RunSpec) -> Result<Vec<u8>> {
@@ -250,8 +250,8 @@ fn emit_one(spec: &RunSpec) -> Result<Vec<u8>> {
     ))
 }
 
-/// Recursively dump every reachable script in the tree - the script, then each
-/// resolvable `source` include and shell child - under `# ==> <path>` headers,
+/// Recursively dump every reachable script in the tree: the script, then each
+/// resolvable `source` include and shell child, under `# ==> <path>` headers,
 /// each with the `$0` rewrite applied. Cycle- and depth-guarded; dynamic/immune
 /// sites become `# ==> ... (not descended)` notes. Since the tree structure is in
 /// the headers, this is an inspection dump, not a single runnable script.
@@ -269,7 +269,7 @@ fn emit_tree(
     }
     if !seen.insert(canonical.clone()) {
         out.extend_from_slice(
-            format!("# ==> {} (already shown - cycle)\n\n", canonical.display()).as_bytes(),
+            format!("# ==> {} (already shown, cycle)\n\n", canonical.display()).as_bytes(),
         );
         return Ok(());
     }
@@ -598,7 +598,7 @@ mod tests {
         );
         assert!(out.contains("echo child-body"), "child body missing: {out}");
         // The child is reached twice (source + exec); the 2nd is a dedup note.
-        assert!(out.contains("already shown - cycle"), "no dedup: {out}");
+        assert!(out.contains("already shown, cycle"), "no dedup: {out}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

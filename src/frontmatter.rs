@@ -1,7 +1,7 @@
 //! Inline `# /// scriptbox ... # ///` metadata, PEP-723 style.
 //!
 //! The block lets a script carry its interpreter and/or an expected checksum
-//! without the shebang line having to spell them out - and because every line
+//! without the shebang line having to spell them out, and because every line
 //! is a `#` comment, the script still runs under a plain interpreter when
 //! scriptbox isn't in the picture.
 //!

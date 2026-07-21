@@ -1,4 +1,4 @@
-//! scriptbox - read a script fully into an immutable copy at invoke, verify an
+//! scriptbox: read a script fully into an immutable copy at invoke, verify an
 //! optional checksum, then hand it to the real interpreter. Closes the window
 //! where editing a running script (by you, a background process, or malware)
 //! changes what executes past the current line.
@@ -24,7 +24,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 enum Action {
     Run(run::RunSpec),
     /// Print the exact bytes scriptbox would hand the interpreter (the `$0`
-    /// rewrite applied), without running - for debugging / `shellcheck`.
+    /// rewrite applied), without running, for debugging / `shellcheck`.
     Emit(run::RunSpec),
     Hash(PathBuf),
     Pin(PathBuf),
@@ -175,10 +175,10 @@ fn usage() {
     let subs_note = if subscripts::enabled() {
         "included in this build"
     } else {
-        "not in this build - reinstall with `--features subscripts`"
+        "not in this build; reinstall with `--features subscripts`"
     };
     eprintln!(
-        "scriptbox {VERSION} - run a script from an immutable copy\n\
+        "scriptbox {VERSION}: run a script from an immutable copy\n\
 \n\
 USAGE:\n\
     scriptbox [FLAGS] [INTERPRETER [IARGS...]] <SCRIPT> [ARGS...]\n\
@@ -208,7 +208,7 @@ SWITCHES (also settable in the `# /// scriptbox` block; a flag wins):\n\
 \n\
     -V, --version    -h, --help\n\
 \n\
-Self-locating scripts should read $SCRIPTBOX_SOURCE (the real path) - e.g.\n\
+Self-locating scripts should read $SCRIPTBOX_SOURCE (the real path), e.g.\n\
     SELF=\"${{SCRIPTBOX_SOURCE:-${{BASH_SOURCE[0]}}}}\"\n"
     );
 }

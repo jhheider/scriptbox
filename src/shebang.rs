@@ -16,7 +16,7 @@ pub struct Shebang {
 /// Extract the interpreter from a `#!` first line, resolving `/usr/bin/env`
 /// (with or without a leading `-S`). Returns `None` when the first line is not
 /// a shebang, or when it points back at scriptbox itself (which must not
-/// recurse - that case is handled by the argv interpreter override instead).
+/// recurse; that case is handled by the argv interpreter override instead).
 pub fn parse(bytes: &[u8]) -> Option<Shebang> {
     let line_end = bytes
         .iter()

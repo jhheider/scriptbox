@@ -4,15 +4,15 @@
 //! `/proc/self/fd/N`), `$0` and `${BASH_SOURCE[0]}` see that fd path rather than
 //! the real script path. `SCRIPTBOX_SOURCE` (exported unconditionally by the
 //! runner) is the universal escape hatch, but for the common `usage: $0` /
-//! `dirname "$0"` case we can also reset `$0` in-run - where the shell supports
-//! it - by prepending a `$0` reset to the first body line, joined with `;`.
+//! `dirname "$0"` case we can also reset `$0` in-run, where the shell supports
+//! it, by prepending a `$0` reset to the first body line, joined with `;`.
 //!
 //! Prepending onto the first body line (rather than swapping the shebang, or
 //! inserting a new line) buys two things at once: no line is added, so every
 //! original line number is preserved exactly, and the shebang (if any) stays on
 //! line 1, so the served copy stays lint-clean (same shell dialect, no
 //! "missing shebang"). The mashed-together first line is never seen by a human -
-//! it's the internal frozen copy - so that's a zero-cost trick.
+//! it's the internal frozen copy, so that's a zero-cost trick.
 //!
 //! What each shell supports for an *in-run* `$0` reset (probed empirically):
 //! - **bash >= 5**: `BASH_ARGV0='...'` (on bash 3.2 it's a harmless plain var).
@@ -64,14 +64,14 @@ pub fn shell_squote(s: &str) -> String {
 /// Produce the bytes to hand the interpreter, applying the `Rewrite` `$0`
 /// mechanism when asked (and the interpreter supports an in-run `$0` reset).
 ///
-/// The `$0` reset is **prepended to the first body line, joined with `;`** - after
+/// The `$0` reset is **prepended to the first body line, joined with `;`**, after
 /// the shebang line if there is one, else at the very start. This adds no line, so
 /// every original line number is preserved exactly (error messages stay accurate),
-/// and the shebang stays on line 1, so the served copy is lint-clean - scriptbox
+/// and the shebang stays on line 1, so the served copy is lint-clean, scriptbox
 /// adds no findings a linter wouldn't already report on the original.
 ///
 /// The one exception is a shebang with no body (nothing after it): there's no line
-/// to join onto, so the reset is appended on its own line (harmless - no body to
+/// to join onto, so the reset is appended on its own line (harmless, no body to
 /// misnumber). In every non-rewrite case the original bytes are returned verbatim
 /// (`Source`/`Off` serve verbatim; `Source` gets `$0` from the dot-source call).
 ///
@@ -105,7 +105,7 @@ pub fn prepare_bytes(original: &[u8], interp: &str, real_path: &str, rewrite: bo
         0
     };
 
-    // Prepend the reset to the first body line with `; ` - no new line.
+    // Prepend the reset to the first body line with `; `, no new line.
     let mut out = original[..split].to_vec();
     out.extend_from_slice(prologue.as_bytes());
     out.extend_from_slice(b"; ");
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn no_shebang_joins_onto_line_one() {
-        // No shebang line, so the reset joins onto the original line 1 - no line
+        // No shebang line, so the reset joins onto the original line 1, no line
         // added, line numbers preserved, code never deleted.
         let out = prepare_bytes(b"echo first\nfalse\n", "bash", "/real.sh", true);
         assert_eq!(
